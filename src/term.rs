@@ -4,7 +4,6 @@ use vte::ansi::{
     Color, NamedColor,
     CursorStyle, CursorShape,
     LineClearMode, ClearMode, TabulationClearMode,
-    Rgb,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -59,7 +58,6 @@ pub struct Term {
     pub cursor_bg: Color,
     pub cursor_attrs: CellAttrs,
     pub width: usize,
-    pub palette: [Rgb; 16],
 }
 
 impl Term {
@@ -72,60 +70,42 @@ impl Term {
             cursor_bg: Color::Named(NamedColor::Background),
             cursor_attrs: CellAttrs::empty(),
             width: 80,
-            palette: [
-                Rgb { r: 0x3c, g: 0x38, b: 0x36 }, //  0 black
-                Rgb { r: 0xcc, g: 0x24, b: 0x1d }, //  1 red
-                Rgb { r: 0x98, g: 0x97, b: 0x1a }, //  2 green
-                Rgb { r: 0xd7, g: 0x99, b: 0x21 }, //  3 yellow
-                Rgb { r: 0x45, g: 0x85, b: 0x88 }, //  4 blue
-                Rgb { r: 0xb1, g: 0x62, b: 0x86 }, //  5 magenta
-                Rgb { r: 0x68, g: 0x9d, b: 0x6a }, //  6 cyan
-                Rgb { r: 0xfb, g: 0xeb, b: 0xd7 }, //  7 white
-                Rgb { r: 0xc2, g: 0xb3, b: 0xa4 }, //  8 bright black
-                Rgb { r: 0x9d, g: 0x00, b: 0x06 }, //  9 bright red
-                Rgb { r: 0x79, g: 0x74, b: 0x0e }, // 10 bright green
-                Rgb { r: 0xb5, g: 0x76, b: 0x14 }, // 11 bright yellow
-                Rgb { r: 0x07, g: 0x66, b: 0x78 }, // 12 bright blue
-                Rgb { r: 0x8f, g: 0x3f, b: 0x71 }, // 13 bright magenta
-                Rgb { r: 0x42, g: 0x7b, b: 0x58 }, // 14 bright cyan
-                Rgb { r: 0x3c, g: 0x38, b: 0x36 }, // 15 bright white
-            ],
         }
     }
 
-    pub fn resolve(&self, color: Color) -> iced::Color {
+    pub fn resolve(&self, theme: &crate::styles::Theme, color: Color) -> iced::Color {
         let rgb = match color {
             Color::Spec(rgb) => rgb,
-            Color::Indexed(ind) => self.palette[ind as usize],
-            Color::Named(NamedColor::Black) => self.palette[0],
-            Color::Named(NamedColor::Red) => self.palette[1],
-            Color::Named(NamedColor::Green) => self.palette[2],
-            Color::Named(NamedColor::Yellow) => self.palette[3],
-            Color::Named(NamedColor::Blue) => self.palette[4],
-            Color::Named(NamedColor::Magenta) => self.palette[5],
-            Color::Named(NamedColor::Cyan) => self.palette[6],
-            Color::Named(NamedColor::White) => self.palette[7],
-            Color::Named(NamedColor::BrightBlack) => self.palette[8],
-            Color::Named(NamedColor::BrightRed) => self.palette[9],
-            Color::Named(NamedColor::BrightGreen) => self.palette[10],
-            Color::Named(NamedColor::BrightYellow) => self.palette[11],
-            Color::Named(NamedColor::BrightBlue) => self.palette[12],
-            Color::Named(NamedColor::BrightMagenta) => self.palette[13],
-            Color::Named(NamedColor::BrightCyan) => self.palette[14],
-            Color::Named(NamedColor::BrightWhite) => self.palette[15],
-            Color::Named(NamedColor::Foreground) => self.palette[0],
-            Color::Named(NamedColor::Background) => self.palette[7],
-            Color::Named(NamedColor::Cursor) => self.palette[0],
-            Color::Named(NamedColor::DimBlack) => self.palette[0] * 0.67,
-            Color::Named(NamedColor::DimRed) => self.palette[1] * 0.67,
-            Color::Named(NamedColor::DimGreen) => self.palette[2] * 0.67,
-            Color::Named(NamedColor::DimYellow) => self.palette[3] * 0.67,
-            Color::Named(NamedColor::DimBlue) => self.palette[4] * 0.67,
-            Color::Named(NamedColor::DimMagenta) => self.palette[5] * 0.67,
-            Color::Named(NamedColor::DimCyan) => self.palette[6] * 0.67,
-            Color::Named(NamedColor::DimWhite) => self.palette[7] * 0.67,
-            Color::Named(NamedColor::BrightForeground) => self.palette[8],
-            Color::Named(NamedColor::DimForeground) => self.palette[0] * 0.67,
+            Color::Indexed(ind) => theme.palette[ind as usize],
+            Color::Named(NamedColor::Black) => theme.palette[0],
+            Color::Named(NamedColor::Red) => theme.palette[1],
+            Color::Named(NamedColor::Green) => theme.palette[2],
+            Color::Named(NamedColor::Yellow) => theme.palette[3],
+            Color::Named(NamedColor::Blue) => theme.palette[4],
+            Color::Named(NamedColor::Magenta) => theme.palette[5],
+            Color::Named(NamedColor::Cyan) => theme.palette[6],
+            Color::Named(NamedColor::White) => theme.palette[7],
+            Color::Named(NamedColor::BrightBlack) => theme.palette[8],
+            Color::Named(NamedColor::BrightRed) => theme.palette[9],
+            Color::Named(NamedColor::BrightGreen) => theme.palette[10],
+            Color::Named(NamedColor::BrightYellow) => theme.palette[11],
+            Color::Named(NamedColor::BrightBlue) => theme.palette[12],
+            Color::Named(NamedColor::BrightMagenta) => theme.palette[13],
+            Color::Named(NamedColor::BrightCyan) => theme.palette[14],
+            Color::Named(NamedColor::BrightWhite) => theme.palette[15],
+            Color::Named(NamedColor::Foreground) => theme.palette[0],
+            Color::Named(NamedColor::Background) => theme.palette[7],
+            Color::Named(NamedColor::Cursor) => theme.palette[0],
+            Color::Named(NamedColor::DimBlack) => theme.palette[0] * 0.67,
+            Color::Named(NamedColor::DimRed) => theme.palette[1] * 0.67,
+            Color::Named(NamedColor::DimGreen) => theme.palette[2] * 0.67,
+            Color::Named(NamedColor::DimYellow) => theme.palette[3] * 0.67,
+            Color::Named(NamedColor::DimBlue) => theme.palette[4] * 0.67,
+            Color::Named(NamedColor::DimMagenta) => theme.palette[5] * 0.67,
+            Color::Named(NamedColor::DimCyan) => theme.palette[6] * 0.67,
+            Color::Named(NamedColor::DimWhite) => theme.palette[7] * 0.67,
+            Color::Named(NamedColor::BrightForeground) => theme.palette[8],
+            Color::Named(NamedColor::DimForeground) => theme.palette[0] * 0.67,
         };
 
         iced::Color::from_rgb8(rgb.r, rgb.g, rgb.b)

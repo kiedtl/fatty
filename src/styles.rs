@@ -1,0 +1,346 @@
+use iced::{Gradient, Background, Border, Color};
+use iced::widget::{container, button, scrollable, text_input};
+
+use vte::ansi::Rgb;
+use crate::colors::Hsv;
+
+#[derive(Copy, Clone)]
+pub struct Theme {
+    pub palette: [Rgb; 16],
+
+    pub fg: Color,
+    pub white: Color,
+
+    pub bg_hue: u16,
+    pub bg_sat: f32,
+
+//     pub red_hue: u16,
+//     pub red_sat: f32,
+
+    pub ac_hue: u16,
+    pub ac_sat: f32,
+}
+
+impl Theme {
+    pub fn gruvbox() -> Theme {
+        Theme {
+            palette: [
+                Rgb { r: 0x3c, g: 0x38, b: 0x36 }, //  0 black
+                Rgb { r: 0xcc, g: 0x24, b: 0x1d }, //  1 red
+                Rgb { r: 0x98, g: 0x97, b: 0x1a }, //  2 green
+                Rgb { r: 0xd7, g: 0x99, b: 0x21 }, //  3 yellow
+                Rgb { r: 0x45, g: 0x85, b: 0x88 }, //  4 blue
+                Rgb { r: 0xb1, g: 0x62, b: 0x86 }, //  5 magenta
+                Rgb { r: 0x68, g: 0x9d, b: 0x6a }, //  6 cyan
+                Rgb { r: 0xfb, g: 0xeb, b: 0xd7 }, //  7 white
+                Rgb { r: 0xc2, g: 0xb3, b: 0xa4 }, //  8 bright black
+                Rgb { r: 0x9d, g: 0x00, b: 0x06 }, //  9 bright red
+                Rgb { r: 0x79, g: 0x74, b: 0x0e }, // 10 bright green
+                Rgb { r: 0xb5, g: 0x76, b: 0x14 }, // 11 bright yellow
+                Rgb { r: 0x07, g: 0x66, b: 0x78 }, // 12 bright blue
+                Rgb { r: 0x8f, g: 0x3f, b: 0x71 }, // 13 bright magenta
+                Rgb { r: 0x42, g: 0x7b, b: 0x58 }, // 14 bright cyan
+                Rgb { r: 0x3c, g: 0x38, b: 0x36 }, // 15 bright white
+            ],
+
+            fg: Color::from_rgb8(0x28, 0x28, 0x28),
+            white: Color::from_rgb8(0xfb, 0xfb, 0xe7),
+
+            bg_hue: 33,
+            bg_sat: 0.14, //0.153,
+
+            ac_hue: 19,
+            ac_sat: 0.61,
+        }
+    }
+
+    pub fn bg(&self, index: usize) -> Color {
+        let v = (index & 15) as f32 * (1. / 15.);
+        (Hsv { h: self.bg_hue, s: self.bg_sat, v }).to_color()
+    }
+
+    pub fn ac(&self, index: usize) -> Color {
+        let v = (index & 15) as f32 * (1. / 15.);
+        (Hsv { h: self.ac_hue, s: self.ac_sat, v }).to_color()
+    }
+}
+
+impl iced::theme::Base for Theme {
+    fn name(&self) -> &str {
+        "fatty"
+    }
+
+    fn base(&self) -> iced::theme::Style {
+        iced::theme::Style {
+            background_color: self.bg(14),
+            text_color: self.fg,
+        }
+    }
+
+    fn default(preference: iced::theme::Mode) -> Self {
+        match preference {
+            iced::theme::Mode::None | iced::theme::Mode::Light => Theme::gruvbox(),
+            iced::theme::Mode::Dark => todo!(),
+        }
+    }
+
+    fn mode(&self) -> iced::theme::Mode {
+        iced::theme::Mode::Light
+    }
+
+    fn seed(&self) -> Option<iced::theme::palette::Seed> {
+        Some(iced::theme::palette::Seed {
+            background: self.bg(14),
+            text: self.fg,
+            primary: self.fg,
+            success: self.fg,
+            warning: self.fg,
+            danger: self.fg,
+        })
+    }
+}
+
+impl iced::widget::text::Catalog for Theme {
+    type Class<'a> = TextClass;
+
+    fn default<'a>() -> Self::Class<'a> {
+        TextClass::Normal
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> iced::widget::text::Style {
+        iced::widget::text::Style {
+            color: class.color(*self),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum TextClass {
+    Normal,
+}
+
+impl TextClass {
+    pub fn color(self, _t: Theme) -> Option<Color> {
+        match self {
+            TextClass::Normal => None,
+        }
+    }
+}
+
+impl container::Catalog for Theme {
+    type Class<'a> = CS;
+
+    fn default<'a>() -> Self::Class<'a> {
+        CS::Base
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> container::Style {
+        class.style(self)
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum CS {
+    Outer,
+    Base,
+    Box,
+}
+
+impl CS {
+    pub fn style(self, t: &Theme) -> container::Style {
+        match self {
+            CS::Outer => container::Style {
+                text_color: Some(t.fg),
+                background: Some(Background::Color(t.bg(15))),
+                snap: true,
+                ..Default::default()
+            },
+            CS::Base => container::Style {
+                text_color: Some(t.fg),
+                background: None,
+                snap: true,
+                ..Default::default()
+            },
+            CS::Box => container::Style {
+                text_color: Some(t.fg),
+                background: Some(Background::Gradient(
+                        Gradient::Linear(
+                            iced::gradient::Linear::new(std::f32::consts::PI)
+                                .add_stop(0.0, t.bg(15))
+                                .add_stop(0.2, t.bg(14))
+                                .add_stop(0.8, t.bg(12)),
+                        )
+                )),
+                border: Border {
+                    width: 1.,
+                    radius: (4.).into(),
+                    color: t.bg(6),
+                },
+                shadow: Default::default(),
+                snap: true,
+            },
+        }
+    }
+}
+
+impl scrollable::Catalog for Theme {
+    type Class<'a> = Box<dyn Fn(&Theme, scrollable::Status) -> scrollable::Style + 'a>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(scrollable_style)
+    }
+
+    fn style(&self, class: &Self::Class<'_>, status: scrollable::Status) -> scrollable::Style {
+        class(self, status)
+    }
+}
+
+impl text_input::Catalog for Theme {
+    type Class<'a> = Box<dyn Fn(&Theme, text_input::Status) -> text_input::Style + 'a>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(input)
+    }
+
+    fn style(&self, class: &Self::Class<'_>, status: text_input::Status) -> text_input::Style {
+        class(self, status)
+    }
+}
+
+impl button::Catalog for Theme {
+    type Class<'a> = Box<dyn Fn(&Theme, button::Status) -> button::Style + 'a>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|_theme, _| iced::widget::button::Style::default())
+    }
+
+    fn style(&self, class: &Self::Class<'_>, status: button::Status) -> button::Style {
+        class(self, status)
+    }
+}
+
+pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
+    match s {
+        scrollable::Status::Active { .. } => {
+            scrollable::Style {
+                container: container::Style::default(),
+                vertical_rail: scrollable::Rail {
+                    background: Some(Background::Color(t.bg(15))),
+                    border: Border {
+                        radius: (4.).into(),
+                        ..Default::default()
+                    },
+                    scroller: iced::widget::scrollable::Scroller {
+                        background: Background::Color(t.ac(7)),
+                        border: Default::default(),
+                    },
+                },
+                horizontal_rail: iced::widget::scrollable::Rail {
+                    background: Some(Background::Color(t.bg(15))),
+                    border: Border {
+                        radius: (4.).into(),
+                        ..Default::default()
+                    },
+                    scroller: iced::widget::scrollable::Scroller {
+                        background: Background::Color(t.ac(7)),
+                        border: Default::default(),
+                    },
+                },
+                gap: None,
+                auto_scroll: scrollable::AutoScroll {
+                    background: Background::Color(t.bg(15)),
+                    border: Border {
+                        radius: (4.).into(),
+                        ..Default::default()
+                    },
+                    shadow: Default::default(),
+                    icon: t.fg,
+                },
+            }
+        },
+        scrollable::Status::Hovered {
+            is_horizontal_scrollbar_hovered: ish,
+            is_vertical_scrollbar_hovered: isv,
+            ..
+        } => {
+            let u = scrollable_style(t, iced::widget::scrollable::Status::Active {
+                is_horizontal_scrollbar_disabled: false,
+                is_vertical_scrollbar_disabled: false,
+            });
+            let h = iced::widget::scrollable::Rail {
+                scroller: iced::widget::scrollable::Scroller {
+                    background: Background::Color(t.ac(10)),
+                    border: Default::default(),
+                    ..u.vertical_rail.scroller
+                },
+                ..u.vertical_rail
+            };
+            iced::widget::scrollable::Style {
+                vertical_rail: if isv { h } else { u.vertical_rail },
+                horizontal_rail: if ish { h } else { u.horizontal_rail },
+                ..u
+            }
+        },
+        scrollable::Status::Dragged {
+            is_horizontal_scrollbar_dragged: ish,
+            is_vertical_scrollbar_dragged: isv,
+            ..
+        } => {
+            let u = scrollable_style(t, scrollable::Status::Active {
+                is_horizontal_scrollbar_disabled: false,
+                is_vertical_scrollbar_disabled: false,
+            });
+            let h = scrollable::Rail {
+                scroller: scrollable::Scroller {
+                    background: Background::Color(t.ac(10)),
+                    border: Default::default(),
+                    ..u.vertical_rail.scroller
+                },
+                ..u.vertical_rail
+            };
+            scrollable::Style {
+                vertical_rail: if isv { h } else { u.vertical_rail },
+                horizontal_rail: if ish { h } else { u.horizontal_rail },
+                ..u
+            }
+        },
+    }
+}
+
+pub fn input(t: &Theme, status: text_input::Status) -> text_input::Style {
+    let active = text_input::Style {
+        background: iced::Background::Color(t.white),
+        border: Border {
+            radius: (4.).into(),
+            width: 2.,
+            color: t.bg(8),
+        },
+        icon: t.ac(4),
+        placeholder: t.bg(8),
+        value: t.fg,
+        selection: t.ac(14),
+    };
+
+    match status {
+        text_input::Status::Active => active,
+        text_input::Status::Hovered => text_input::Style {
+            border: Border {
+                color: t.ac(12),
+                ..active.border
+            },
+            ..active
+        },
+        text_input::Status::Focused { .. } => text_input::Style {
+            border: Border {
+                color: t.ac(8),
+                ..active.border
+            },
+            ..active
+        },
+        text_input::Status::Disabled => text_input::Style {
+            background: iced::Background::Color(t.bg(14)),
+            value: active.placeholder,
+            ..active
+        },
+    }
+}

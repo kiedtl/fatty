@@ -14,6 +14,10 @@ use iced::widget::{container, Column, row, text::{Rich, Span}, column, text, tex
 
 mod term;
 mod utils;
+mod styles;
+mod colors;
+
+use styles::CS;
 
 static STDERR: Mutex<Option<std::fs::File>> = Mutex::new(None);
 fn set_panic_output(w: OwnedFd) {
@@ -32,7 +36,7 @@ fn install_panic_hook() {
     }));
 }
 
-pub type Elem<'a> = Element<'a, Message>;
+pub type Elem<'a> = Element<'a, Message, styles::Theme, iced::Renderer>;
 
 fn main() -> iced::Result {
     install_panic_hook();
@@ -41,6 +45,7 @@ fn main() -> iced::Result {
     iced::daemon(|| App::new(), App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)
+        .theme(App::theme)
         .run()
 }
 
@@ -70,6 +75,7 @@ struct App {
     input: String,
     execs: Vec<Execution>,
     ansi: vte::ansi::Processor,
+    theme: styles::Theme
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +88,10 @@ pub enum Message {
 }
 
 impl App {
+    fn theme(&self, _: window::Id) -> styles::Theme {
+        self.theme
+    }
+
     fn new() -> (Self, Task<Message>) {
         let (_id, open) = window::open(window::Settings::default());
 
@@ -98,6 +108,7 @@ impl App {
             execs: Vec::new(),
             master: pty.controller,
             ansi: vte::ansi::Processor::new(),
+            theme: styles::Theme::gruvbox(),
         }, open.map(|_| Message::None))
     }
 
@@ -186,17 +197,19 @@ impl App {
                                 Some(ExitReason::Unknown { sigval: None, .. }) => text("Exited (unknown)"),
                             }
                         ],
-                    ),
+                    )
+                        .class(CS::Box)
+                        .padding(3),
                     container(
                         Column::with_children(
                             exec.term.cells.iter()
                                 .map(|line|
-                                    Rich::<'_, (), Message>::with_spans(
+                                    Rich::<'_, (), Message, styles::Theme>::with_spans(
                                         line.iter()
                                             .map(|c|
                                                 Span::new(c.ch)
-                                                    .color(exec.term.resolve(c.fg))
-                                                    .background(iced::Background::Color(exec.term.resolve(c.bg)))
+                                                    .color(exec.term.resolve(&self.theme, c.fg))
+                                                    .background(iced::Background::Color(exec.term.resolve(&self.theme, c.bg)))
                                                     .font(c.iced_font())
                                             )
                                             .collect::<Vec<_>>()
@@ -205,6 +218,7 @@ impl App {
                                 )
                         )
                     )
+                        .padding(1)
                         .width(Length::Fill),
                 ],
             );
@@ -225,7 +239,10 @@ impl App {
             ]
                 .spacing(2)
         )
-            .padding(3)
+            .padding(5)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .class(CS::Outer)
             .into()
     }
 
@@ -252,16 +269,14 @@ impl App {
 
                         if let Some(signal) = Signal::from_named_raw(sigval) {
                             current.exit_reason = Some(ExitReason::Signal { signal, cored });
-                            print!("{}", utils::signal_to_string(signal));
+                            if cored {
+                                print!("{} (core dumped)", utils::signal_to_string(signal));
+                            }
                         } else {
                             current.exit_reason = Some(ExitReason::Unknown { sigval: Some(sigval), cored });
-                            print!("Signal({sigval})");
-                        }
-
-                        if cored {
-                            println!(" (core dumped)");
-                        } else {
-                            println!("");
+                            if cored {
+                                print!("Signal({sigval}) (core dumped)");
+                            }
                         }
                     } else if let Some(exit) = status.exit_status() {
                         current.exit_reason = Some(ExitReason::Normal(exit));
