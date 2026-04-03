@@ -130,6 +130,22 @@ impl Term {
 
         iced::Color::from_rgb8(rgb.r, rgb.g, rgb.b)
     }
+
+    pub fn allocate_rows_until(&mut self, y: usize) {
+        while self.cells.len() <= y {
+            self.cells.push(vec![Cell::default(); self.width]);
+        }
+    }
+
+    pub fn cursor_cell(&mut self) -> Cell {
+        self.allocate_rows_until(self.cursor_y);
+        self.cells[self.cursor_y][self.cursor_x]
+    }
+
+    pub fn cursor_cell_mut(&mut self) -> &mut Cell {
+        self.allocate_rows_until(self.cursor_y);
+        &mut self.cells[self.cursor_y][self.cursor_x]
+    }
 }
 
 impl vte::ansi::Handler for Term {
@@ -144,14 +160,9 @@ impl vte::ansi::Handler for Term {
 
     /// A character to be displayed.
     fn input(&mut self, ch: char) {
-        while self.cells.len() <= self.cursor_y {
-            self.cells.push(vec![
-                Cell::default();
-                self.width
-            ]);
-        }
+        self.allocate_rows_until(self.cursor_y);
 
-        self.cells[self.cursor_y][self.cursor_x] = Cell {
+        *self.cursor_cell_mut() = Cell {
             ch,
             fg: self.cursor_fg,
             bg: self.cursor_bg,
@@ -206,8 +217,8 @@ impl vte::ansi::Handler for Term {
         while self.cursor_x < self.width && count > 0 {
             count -= 1;
 
-            if self.cells[self.cursor_y][self.cursor_x].ch == ' ' {
-                self.cells[self.cursor_y][self.cursor_x].ch = '\t';
+            if self.cursor_cell().ch == ' ' {
+                self.cursor_cell_mut().ch = '\t';
             }
 
             loop {

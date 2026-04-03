@@ -13,6 +13,7 @@ use iced::keyboard::{self, key, Modifiers};
 use iced::widget::{container, Column, row, text::{Rich, Span}, column, text, text_input};
 
 mod term;
+mod utils;
 
 static STDERR: Mutex<Option<std::fs::File>> = Mutex::new(None);
 fn set_panic_output(w: OwnedFd) {
@@ -49,7 +50,19 @@ struct Execution {
     pid: Pid,
     term: term::Term,
     done: bool,
-    exit: Option<i32>,
+    exit_reason: Option<ExitReason>,
+}
+
+enum ExitReason {
+    Normal(i32),
+    Signal {
+        signal: Signal,
+        cored: bool,
+    },
+    Unknown {
+        sigval: Option<i32>,
+        cored: bool,
+    },
 }
 
 struct App {
@@ -111,7 +124,7 @@ impl App {
                     command, child, pid,
                     term: term::Term::new(),
                     done: false,
-                    exit: None,
+                    exit_reason: None,
                 });
             },
             Message::Poll => {
@@ -160,7 +173,19 @@ impl App {
             execs = execs.push(
                 column![
                     container(
-                        text(&exec.command)
+                        row![
+                            container(
+                                text(&exec.command)
+                            )
+                                .width(Length::Fill),
+                            match exec.exit_reason {
+                                None => text("Running"),
+                                Some(ExitReason::Normal(code)) => text(code.to_string()),
+                                Some(ExitReason::Signal { signal, .. }) => text(utils::signal_to_string(signal)),
+                                Some(ExitReason::Unknown { sigval: Some(s), .. }) => text(format!("Signal({s})")),
+                                Some(ExitReason::Unknown { sigval: None, .. }) => text("Exited (unknown)"),
+                            }
+                        ],
                     ),
                     container(
                         Column::with_children(
@@ -222,39 +247,24 @@ impl App {
                     current.done = status.exited() || status.signaled();
 
                     if status.signaled() && let Some(sigval) = status.terminating_signal() {
+                        let raw = status.as_raw();
+                        let cored = raw & 0x80 != 0;
+
                         if let Some(signal) = Signal::from_named_raw(sigval) {
-                            match signal {
-                                Signal::ABORT => print!("Aborted"),
-                                Signal::BUS => print!("Bus error"),
-                                Signal::FPE => print!("Floating-point exception"),
-                                Signal::HUP => print!("Hanged up"),
-                                Signal::ILL => print!("Illegal instruction"),
-                                Signal::INT => print!("Interrupted"),
-                                Signal::KILL => print!("Murdered"),
-                                Signal::PIPE => print!("Broken pipe"),
-                                Signal::QUIT => print!("Quit"),
-                                Signal::SEGV => print!("Segmentation fault"),
-                                Signal::TERM => print!("Terminated"),
-                                Signal::TRAP => print!("Trapped"),
-                                _ => print!("{signal:?}"),
-                            }
+                            current.exit_reason = Some(ExitReason::Signal { signal, cored });
+                            print!("{}", utils::signal_to_string(signal));
                         } else {
+                            current.exit_reason = Some(ExitReason::Unknown { sigval: Some(sigval), cored });
                             print!("Signal({sigval})");
                         }
 
-                        let raw = status.as_raw();
-                        let coredumped = raw & 0x80 != 0;
-
-                        if coredumped {
+                        if cored {
                             println!(" (core dumped)");
                         } else {
                             println!("");
                         }
-
-                    }
-
-                    if current.done {
-                        current.exit = status.exit_status();
+                    } else if let Some(exit) = status.exit_status() {
+                        current.exit_reason = Some(ExitReason::Normal(exit));
                     }
 
                     self.poll_pty();
