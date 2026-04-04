@@ -5,9 +5,12 @@ edition = "2024"
 
 [dependencies]
 bitflags = "2.11.0"
-iced = { git = "https://github.com/iced-rs/iced", rev = "bc3a12c6840430a01b7300b21e5543d3c6e7a82e", features = [ "advanced", "smol", "image", "canvas", "lazy", "qr_code" ]}
+brush-core = "0.4.0"
+iced = { git = "https://github.com/iced-rs/iced", rev = "bc3a12c6840430a01b7300b21e5543d3c6e7a82e", features = [ "advanced", "image", "canvas", "lazy", "qr_code", "tokio" ]}
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "webp"] }
 raw-window-handle = "0.6"
 rustix = "1.1.4"
 rustix-openpty = "0.2.0"
+tokio = "1.51.0"
+#smol = "2.0"
 vte = { version = "0.15.0", features = ["bitflags", "ansi"] }

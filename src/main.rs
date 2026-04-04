@@ -1,11 +1,15 @@
-use std::sync::Mutex;
+#![allow(unused_imports)]
+
+use std::sync::{Arc, Mutex};
 use std::process::{Command, Child};
 use std::time::Duration;
 use std::io::{Read, Write};
 
+use brush_core::{self as bc, Shell};
 use vte;
 use rustix::fd::OwnedFd;
 use rustix::process::{kill_process, Pid, Signal};
+use tokio::sync::Mutex as TokioMutex;
 
 use iced::window;
 use iced::{Event, Element, Task, Subscription, Length};
@@ -36,13 +40,24 @@ fn install_panic_hook() {
     }));
 }
 
+macro_rules! log {
+    ($fmt:literal $(, $e:expr)*) => {
+        if let Ok(mut guard) = STDERR.lock() {
+            if let Some(w) = guard.as_mut() {
+                let _ = writeln!(w, $fmt, $($e)*);
+                return;
+            }
+        }
+    }
+}
+
 pub type Elem<'a> = Element<'a, Message, styles::Theme, iced::Renderer>;
 
 fn main() -> iced::Result {
     install_panic_hook();
     set_panic_output(rustix::io::dup(std::io::stderr()).unwrap());
 
-    iced::daemon(|| App::new(), App::update, App::view)
+    iced::application(App::new, App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)
         .theme(App::theme)
@@ -51,8 +66,8 @@ fn main() -> iced::Result {
 
 struct Execution {
     command: String,
-    child: Child,
-    pid: Pid,
+    // child: Child,
+    // pid: Pid,
     term: term::Term,
     done: bool,
     exit_reason: Option<ExitReason>,
@@ -75,25 +90,27 @@ struct App {
     input: String,
     execs: Vec<Execution>,
     ansi: vte::ansi::Processor,
-    theme: styles::Theme
+    theme: styles::Theme,
+    shell: Arc<TokioMutex<Shell>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Message {
     None,
     Input(String),
     Run,
+    ProgramFinished(Arc<Result<bc::ExecutionResult, bc::Error>>),
     Poll,
     Signal(Signal),
 }
 
 impl App {
-    fn theme(&self, _: window::Id) -> styles::Theme {
+    fn theme(&self) -> styles::Theme {
         self.theme
     }
 
-    fn new() -> (Self, Task<Message>) {
-        let (_id, open) = window::open(window::Settings::default());
+    fn new() -> Self { //(Self, Task<Message>) {
+        //let (_id, open) = window::open(window::Settings::default());
 
         let pty = rustix_openpty::openpty(None, None).unwrap();
         rustix::stdio::dup2_stdout(&pty.user).unwrap();
@@ -103,16 +120,24 @@ impl App {
         let master_flags = rustix::fs::fcntl_getfl(&pty.controller).unwrap();
         rustix::fs::fcntl_setfl(&pty.controller, master_flags | rustix::fs::OFlags::NONBLOCK).unwrap();
 
-        (Self {
+        let shell = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                Shell::new(Default::default()).await.unwrap()
+            })
+        });
+
+        //(
+            Self {
             input: String::new(),
             execs: Vec::new(),
             master: pty.controller,
             ansi: vte::ansi::Processor::new(),
             theme: styles::Theme::gruvbox(),
-        }, open.map(|_| Message::None))
+            shell: Arc::new(TokioMutex::new(shell)),
+        }//, open.map(|_| Message::None))
     }
 
-    fn title(&self, _: window::Id) -> String {
+    fn title(&self) -> String {
         "fatty".to_owned()
     }
 
@@ -121,31 +146,59 @@ impl App {
             Message::None => { }
             Message::Input(s) => self.input = s,
             Message::Run => {
-                let mut args = self.input.split(" ");
-                let Some(command) = args.next() else { return Task::none(); };
+                let shell = self.shell.clone();
+                let Ok(shell) = shell.try_lock() else { return Task::none(); };
 
-                let child = Command::new(command)
-                    .args(args)
-                    .spawn()
-                    .unwrap();
-                let pid = Pid::from_child(&child);
+                match shell.parse_string(&self.input) {
+                    Ok(program) => {
+                        // let mut args = self.input.split(" ");
+                        // let Some(command) = args.next() else { return Task::none(); };
 
-                let command = std::mem::take(&mut self.input);
-                self.execs.push(Execution {
-                    command, child, pid,
-                    term: term::Term::new(),
-                    done: false,
-                    exit_reason: None,
-                });
+                        // let child = Command::new(command)
+                        //     .args(args)
+                        //     .spawn()
+                        //     .unwrap();
+                        // let pid = Pid::from_child(&child);
+
+                        let command = std::mem::take(&mut self.input);
+                        self.execs.push(Execution {
+                            command,
+                            // child,
+                            // pid,
+                            term: term::Term::new(),
+                            done: false,
+                            exit_reason: None,
+                        });
+
+                        let shell = self.shell.clone();
+                        return Task::perform(async move {
+                            shell.lock().await.run_program(program, &Default::default()).await
+                        }, |r| Message::ProgramFinished(Arc::new(r)));
+                    },
+                    Err(err) => {
+                        println!("{err}");
+                    }
+                }
+            },
+            Message::ProgramFinished(result) => {
+                match &*result {
+                    Ok(bc::ExecutionResult { .. }) =>
+                        if let Some(last) = self.execs.last_mut() {
+                            last.done = true;
+                            last.exit_reason = Some(ExitReason::Unknown { cored: false, sigval: None });
+                            self.poll_pty();
+                        },
+                    Err(e) => println!("{e}"),
+                }
             },
             Message::Poll => {
                 self.poll_pty();
-                self.wait_child();
+                //self.wait_child();
             }
             Message::Signal(sig) => {
                 if let Some(current) = self.execs.last() {
-                    kill_process(current.pid, sig).unwrap();
-                    self.wait_child();
+                    //kill_process(current.pid, sig).unwrap();
+                    //self.wait_child();
                 }
             },
         }
@@ -176,7 +229,7 @@ impl App {
         Subscription::batch([poll, keys])
     }
 
-    fn view(&self, _: window::Id) -> Elem<'_> {
+    fn view(&self) -> Elem<'_> {
         let mut execs = Column::new()
             .spacing(1);
 
@@ -257,35 +310,35 @@ impl App {
         }
     }
 
-    fn wait_child(&mut self) {
-        if let Some(current) = self.execs.last_mut() {
-            match rustix::process::waitpid(Some(current.pid), rustix::process::WaitOptions::NOHANG) {
-                Ok(Some((_, status))) => {
-                    current.done = status.exited() || status.signaled();
+    // fn wait_child(&mut self) {
+    //     if let Some(current) = self.execs.last_mut() {
+    //         match rustix::process::waitpid(Some(current.pid), rustix::process::WaitOptions::NOHANG) {
+    //             Ok(Some((_, status))) => {
+    //                 current.done = status.exited() || status.signaled();
 
-                    if status.signaled() && let Some(sigval) = status.terminating_signal() {
-                        let raw = status.as_raw();
-                        let cored = raw & 0x80 != 0;
+    //                 if status.signaled() && let Some(sigval) = status.terminating_signal() {
+    //                     let raw = status.as_raw();
+    //                     let cored = raw & 0x80 != 0;
 
-                        if let Some(signal) = Signal::from_named_raw(sigval) {
-                            current.exit_reason = Some(ExitReason::Signal { signal, cored });
-                            if cored {
-                                print!("{} (core dumped)", utils::signal_to_string(signal));
-                            }
-                        } else {
-                            current.exit_reason = Some(ExitReason::Unknown { sigval: Some(sigval), cored });
-                            if cored {
-                                print!("Signal({sigval}) (core dumped)");
-                            }
-                        }
-                    } else if let Some(exit) = status.exit_status() {
-                        current.exit_reason = Some(ExitReason::Normal(exit));
-                    }
+    //                     if let Some(signal) = Signal::from_named_raw(sigval) {
+    //                         current.exit_reason = Some(ExitReason::Signal { signal, cored });
+    //                         if cored {
+    //                             print!("{} (core dumped)", utils::signal_to_string(signal));
+    //                         }
+    //                     } else {
+    //                         current.exit_reason = Some(ExitReason::Unknown { sigval: Some(sigval), cored });
+    //                         if cored {
+    //                             print!("Signal({sigval}) (core dumped)");
+    //                         }
+    //                     }
+    //                 } else if let Some(exit) = status.exit_status() {
+    //                     current.exit_reason = Some(ExitReason::Normal(exit));
+    //                 }
 
-                    self.poll_pty();
-                },
-                _ => (),
-            }
-        }
-    }
+    //                 self.poll_pty();
+    //             },
+    //             _ => (),
+    //         }
+    //     }
+    // }
 }
