@@ -32,7 +32,7 @@ impl Theme {
                 Rgb { r: 0x45, g: 0x85, b: 0x88 }, //  4 blue
                 Rgb { r: 0xb1, g: 0x62, b: 0x86 }, //  5 magenta
                 Rgb { r: 0x68, g: 0x9d, b: 0x6a }, //  6 cyan
-                Rgb { r: 0xfb, g: 0xeb, b: 0xd7 }, //  7 white
+                Rgb { r: 0xfe, g: 0xf9, b: 0xf3 }, //  7 white
                 Rgb { r: 0xc2, g: 0xb3, b: 0xa4 }, //  8 bright black
                 Rgb { r: 0x9d, g: 0x00, b: 0x06 }, //  9 bright red
                 Rgb { r: 0x79, g: 0x74, b: 0x0e }, // 10 bright green

@@ -61,7 +61,7 @@ pub struct Term {
 }
 
 impl Term {
-    pub fn new() -> Term {
+    pub fn new(width: usize) -> Term {
         Term {
             cells: Vec::new(),
             cursor_y: 0,
@@ -69,7 +69,7 @@ impl Term {
             cursor_fg: Color::Named(NamedColor::Foreground),
             cursor_bg: Color::Named(NamedColor::Background),
             cursor_attrs: CellAttrs::empty(),
-            width: 80,
+            width,
         }
     }
 

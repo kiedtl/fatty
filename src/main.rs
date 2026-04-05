@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::process::{Command, Child};
 use std::time::Duration;
 use std::io::{Read, Write};
+use std::cell;
 
 use brush_core::{self as bc, Shell};
 use vte;
@@ -14,7 +15,7 @@ use tokio::sync::Mutex as TokioMutex;
 use iced::window;
 use iced::{Event, Element, Task, Subscription, Length};
 use iced::keyboard::{self, key, Modifiers};
-use iced::widget::{container, Column, row, text::{Rich, Span}, column, text, text_input};
+use iced::widget::{container, Column, row, text::{Rich, Span}, column, text, text_input, scrollable, responsive, space};
 
 mod term;
 mod utils;
@@ -23,6 +24,8 @@ mod colors;
 mod parser;
 
 use styles::CS;
+
+const FONT_SIZE: f32 = 15.0;
 
 static STDERR: Mutex<Option<std::fs::File>> = Mutex::new(None);
 fn set_panic_output(w: OwnedFd) {
@@ -93,6 +96,8 @@ struct App {
     ansi: vte::ansi::Processor,
     theme: styles::Theme,
     shell: Arc<TokioMutex<Shell>>,
+
+    vwidth: cell::Cell<Option<f32>>,
 }
 
 #[derive(Clone)]
@@ -135,6 +140,7 @@ impl App {
             ansi: vte::ansi::Processor::new(),
             theme: styles::Theme::gruvbox(),
             shell: Arc::new(TokioMutex::new(shell)),
+            vwidth: cell::Cell::new(None),
         }//, open.map(|_| Message::None))
     }
 
@@ -155,12 +161,22 @@ impl App {
                             .unwrap();
                         let pid = Pid::from_child(&child);
 
+                        let font_width = utils::measure_text(
+                            "m", f32::INFINITY, FONT_SIZE, 1., term::Cell::default().iced_font()
+                        ).0
+                            // Sometimes there's an extra column that causes ugly wrapping
+                            * 1.01;
+
+                        let width = self.vwidth.get()
+                            .map(|width| (width / font_width).floor() as usize)
+                            .unwrap_or(70);
+
                         let command = std::mem::take(&mut self.input);
                         self.execs.push(Execution {
                             command,
                             child,
                             pid,
-                            term: term::Term::new(),
+                            term: term::Term::new(width),
                             done: false,
                             exit_reason: None,
                         });
@@ -250,12 +266,14 @@ impl App {
                                 .map(|line|
                                     Rich::<'_, (), Message, styles::Theme>::with_spans(
                                         line.iter()
-                                            .map(|c|
-                                                Span::new(c.ch)
+                                            .map(|c| {
+                                                let ch = if c.ch == '\t' { ' ' } else { c.ch };
+                                                Span::new(ch)
                                                     .color(exec.term.resolve(&self.theme, c.fg))
                                                     .background(iced::Background::Color(exec.term.resolve(&self.theme, c.bg)))
                                                     .font(c.iced_font())
-                                            )
+                                                    .size(FONT_SIZE)
+                                            })
                                             .collect::<Vec<_>>()
                                     )
                                         .into()
@@ -278,7 +296,21 @@ impl App {
 
         container(
             column![
-                container(execs),
+                scrollable(
+                    container(execs)
+                        .padding(iced::Padding {
+                            right: 15.,
+                            ..Default::default()
+                        })
+                )
+                    .anchor_bottom()
+                    .height(Length::Fill),
+                responsive(move |size| {
+                    self.vwidth.set(Some(size.width));
+                    space()
+                        .into()
+                })
+                    .width(Length::Fill),
                 input,
             ]
                 .spacing(2)
