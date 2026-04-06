@@ -6,22 +6,24 @@ use std::time::Duration;
 use std::io::{Read, Write};
 use std::cell;
 
-use brush_core::{self as bc, Shell};
+//use brush_core::{self as bc, Shell};
 use vte;
 use rustix::fd::OwnedFd;
 use rustix::process::{kill_process, Pid, Signal};
-use tokio::sync::Mutex as TokioMutex;
+//use tokio::sync::Mutex as TokioMutex;
 
+use iced::futures::stream;
 use iced::window;
 use iced::{Event, Element, Task, Subscription, Length};
 use iced::keyboard::{self, key, Modifiers};
 use iced::widget::{container, Column, row, text::{Rich, Span}, column, text, text_input, scrollable, responsive, space};
 
-mod term;
-mod utils;
-mod styles;
 mod colors;
 mod parser;
+mod styles;
+mod term;
+mod utils;
+mod vm;
 
 use styles::CS;
 
@@ -44,12 +46,13 @@ fn install_panic_hook() {
     }));
 }
 
+#[macro_export]
 macro_rules! log {
     ($fmt:literal $(, $e:expr)*) => {
-        if let Ok(mut guard) = STDERR.lock() {
+        if let Ok(mut guard) = crate::STDERR.lock() {
+            use std::io::Write;
             if let Some(w) = guard.as_mut() {
-                let _ = writeln!(w, $fmt, $($e)*);
-                return;
+                let _ = writeln!(w, $fmt, $($e,)*);
             }
         }
     }
@@ -68,16 +71,15 @@ fn main() -> iced::Result {
         .run()
 }
 
-struct Execution {
-    command: String,
-    child: Child,
-    pid: Pid,
+pub struct Execution {
+    string: String,
+    vm: vm::VM,
     term: term::Term,
-    done: bool,
     exit_reason: Option<ExitReason>,
 }
 
-enum ExitReason {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ExitReason {
     Normal(i32),
     Signal {
         signal: Signal,
@@ -95,7 +97,7 @@ struct App {
     execs: Vec<Execution>,
     ansi: vte::ansi::Processor,
     theme: styles::Theme,
-    shell: Arc<TokioMutex<Shell>>,
+    //shell: Arc<TokioMutex<Shell>>,
 
     vwidth: cell::Cell<Option<f32>>,
 }
@@ -105,7 +107,8 @@ pub enum Message {
     None,
     Input(String),
     Run,
-    ProgramFinished(Arc<Result<bc::ExecutionResult, bc::Error>>),
+    ContinueProgram,
+    ChildExited(Pid, ExitReason),
     Poll,
     Signal(Signal),
 }
@@ -126,11 +129,11 @@ impl App {
         let master_flags = rustix::fs::fcntl_getfl(&pty.controller).unwrap();
         rustix::fs::fcntl_setfl(&pty.controller, master_flags | rustix::fs::OFlags::NONBLOCK).unwrap();
 
-        let shell = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                Shell::new(Default::default()).await.unwrap()
-            })
-        });
+        // let shell = tokio::task::block_in_place(|| {
+        //     tokio::runtime::Handle::current().block_on(async {
+        //         Shell::new(Default::default()).await.unwrap()
+        //     })
+        // });
 
         //(
             Self {
@@ -139,7 +142,7 @@ impl App {
             master: pty.controller,
             ansi: vte::ansi::Processor::new(),
             theme: styles::Theme::gruvbox(),
-            shell: Arc::new(TokioMutex::new(shell)),
+            //shell: Arc::new(TokioMutex::new(shell)),
             vwidth: cell::Cell::new(None),
         }//, open.map(|_| Message::None))
     }
@@ -153,13 +156,9 @@ impl App {
             Message::None => { }
             Message::Input(s) => self.input = s,
             Message::Run => {
-                match parser::parse_command(&self.input) {
-                    Ok((command, args)) => {
-                        let child = Command::new(command)
-                            .args(args)
-                            .spawn()
-                            .unwrap();
-                        let pid = Pid::from_child(&child);
+                match parser::parse_str(&self.input) {
+                    Ok(parsed) => {
+                        let program = vm::compile(&parsed);
 
                         let font_width = utils::measure_text(
                             "m", f32::INFINITY, FONT_SIZE, 1., term::Cell::default().iced_font()
@@ -171,15 +170,21 @@ impl App {
                             .map(|width| (width / font_width).floor() as usize)
                             .unwrap_or(70);
 
-                        let command = std::mem::take(&mut self.input);
+                        let string = std::mem::take(&mut self.input);
                         self.execs.push(Execution {
-                            command,
-                            child,
-                            pid,
+                            string,
+                            vm: vm::VM {
+                                program,
+                                pc: (0, None),
+                                waiting_on: None,
+                                child_exit_stack: Vec::new(),
+                                done: false,
+                            },
                             term: term::Term::new(width),
-                            done: false,
                             exit_reason: None,
                         });
+
+                        return self.update(Message::ContinueProgram);
                     },
                     Err(err) => {
                         println!("{err}");
@@ -187,25 +192,46 @@ impl App {
                     }
                 }
             },
-            Message::ProgramFinished(result) => {
-                match &*result {
-                    Ok(bc::ExecutionResult { .. }) =>
-                        if let Some(last) = self.execs.last_mut() {
-                            last.done = true;
-                            last.exit_reason = Some(ExitReason::Unknown { cored: false, sigval: None });
-                            self.poll_pty();
-                        },
-                    Err(e) => println!("{e}"),
+            Message::ContinueProgram => {
+                if let Some(current) = self.execs.last_mut() {
+                    assert!(current.vm.waiting_on == None);
+                    current.vm.execute();
+
+                    if current.vm.done {
+                        current.exit_reason = current.vm.child_exit_stack.pop();
+                    }
+
+                    self.poll_pty();
                 }
+            },
+            Message::ChildExited(pid, reason) => {
+                match reason {
+                    ExitReason::Normal(_) => (),
+                    ExitReason::Signal { signal, .. } => print!("{}", utils::signal_to_string(signal)),
+                    ExitReason::Unknown { sigval: Some(s), .. } => print!("Signal({s})"),
+                    ExitReason::Unknown { sigval: None, .. } => print!("Exited (unknown)"),
+                }
+
+                match reason {
+                    ExitReason::Signal { cored: true, .. }
+                    | ExitReason::Unknown { cored: true, .. } => print!(" (core dumped"),
+                    _ => (),
+                }
+
+                println!(""); // Newline
+
+                if let Some(current) = self.execs.last_mut() {
+                    current.vm.handle_exit(pid, reason);
+                }
+
+                return self.update(Message::ContinueProgram);
             },
             Message::Poll => {
                 self.poll_pty();
-                self.wait_child();
             }
             Message::Signal(sig) => {
-                if let Some(current) = self.execs.last() {
-                    kill_process(current.pid, sig).unwrap();
-                    self.wait_child();
+                if let Some(current) = self.execs.last() && let Some(pid) = current.vm.waiting_on {
+                    kill_process(pid, sig).unwrap();
                 }
             },
         }
@@ -213,7 +239,7 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let poll = if let Some(last) = self.execs.last() && !last.done {
+        let poll = if let Some(last) = self.execs.last() && !last.vm.done {
             iced::time::every(Duration::from_millis(30)).map(|_| Message::Poll)
         } else {
             Subscription::none()
@@ -233,7 +259,18 @@ impl App {
             }
         });
 
-        Subscription::batch([poll, keys])
+        let wait = match self.execs.last() {
+            Some(Execution {
+                vm: vm::VM {
+                    waiting_on: Some(pid),
+                    ..
+                },
+                ..
+            }) => wait_on(*pid).with(*pid).map(|(pid, exited)| Message::ChildExited(pid, exited)),
+            _ => Subscription::none(),
+        };
+
+        Subscription::batch([poll, keys, wait])
     }
 
     fn view(&self) -> Elem<'_> {
@@ -246,7 +283,7 @@ impl App {
                     container(
                         row![
                             container(
-                                text(&exec.command)
+                                text(&exec.string)
                             )
                                 .width(Length::Fill),
                             match exec.exit_reason {
@@ -288,7 +325,7 @@ impl App {
 
         let mut input = text_input("rm -rf /", &self.input);
 
-        if let Some(last) = self.execs.last() && !last.done {} else {
+        if let Some(last) = self.execs.last() && !last.vm.done {} else {
             input = input
                 .on_input(Message::Input)
                 .on_submit(Message::Run);
@@ -308,8 +345,10 @@ impl App {
                 responsive(move |size| {
                     self.vwidth.set(Some(size.width));
                     space()
+                        .height(1.)
                         .into()
                 })
+                    .height(Length::Shrink)
                     .width(Length::Fill),
                 input,
             ]
@@ -323,8 +362,9 @@ impl App {
     }
 
     fn poll_pty(&mut self) {
+        let i = std::time::Instant::now();
         if let Some(last) = self.execs.last_mut() {
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; 65535];
             match rustix::io::read(&self.master, &mut buf) {
                 Ok(n) => self.ansi.advance(&mut last.term, &buf[0..n]),
                 Err(rustix::io::Errno::AGAIN) => (),
@@ -332,36 +372,40 @@ impl App {
             }
         }
     }
+}
 
-    fn wait_child(&mut self) {
-        if let Some(current) = self.execs.last_mut() {
-            match rustix::process::waitpid(Some(current.pid), rustix::process::WaitOptions::NOHANG) {
+pub fn wait_on(pid: Pid) -> Subscription<ExitReason> {
+    Subscription::run_with(pid, |pid| stream::unfold(Some(*pid), |state| async move {
+        let pid = state?;
+
+        loop {
+            let result = tokio::task::spawn_blocking(move || {
+                rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty())
+            })
+            .await
+            .expect("spawn_blocking panicked");
+
+            match result {
                 Ok(Some((_, status))) => {
-                    current.done = status.exited() || status.signaled();
+                    let raw = status.as_raw();
+                    let cored = raw & 0x80 != 0;
 
-                    if status.signaled() && let Some(sigval) = status.terminating_signal() {
-                        let raw = status.as_raw();
-                        let cored = raw & 0x80 != 0;
-
-                        if let Some(signal) = Signal::from_named_raw(sigval) {
-                            current.exit_reason = Some(ExitReason::Signal { signal, cored });
-                            if cored {
-                                print!("{} (core dumped)", utils::signal_to_string(signal));
+                    return
+                        if status.signaled() && let Some(sigval) = status.terminating_signal() {
+                            if let Some(signal) = Signal::from_named_raw(sigval) {
+                                Some((ExitReason::Signal { signal, cored }, None))
+                            } else {
+                                Some((ExitReason::Unknown { sigval: Some(sigval), cored }, None))
                             }
+                        } else if let Some(exit) = status.exit_status() {
+                            Some((ExitReason::Normal(exit), None))
                         } else {
-                            current.exit_reason = Some(ExitReason::Unknown { sigval: Some(sigval), cored });
-                            if cored {
-                                print!("Signal({sigval}) (core dumped)");
-                            }
-                        }
-                    } else if let Some(exit) = status.exit_status() {
-                        current.exit_reason = Some(ExitReason::Normal(exit));
-                    }
-
-                    self.poll_pty();
+                            Some((ExitReason::Unknown { sigval: None, cored }, None))
+                        };
                 },
-                _ => (),
+                Ok(None) => unreachable!(),
+                Err(_) => unreachable!(),
             }
         }
-    }
+    }))
 }

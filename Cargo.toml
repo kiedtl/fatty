@@ -5,9 +5,11 @@ edition = "2024"
 
 [dependencies]
 bitflags = "2.11.0"
-brush-core = "0.4.0"
+#brush-core = "0.4.0"
+glob = "0.3.3"
 iced = { git = "https://github.com/iced-rs/iced", rev = "bc3a12c6840430a01b7300b21e5543d3c6e7a82e", features = [ "advanced", "image", "canvas", "lazy", "qr_code", "tokio" ]}
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "webp"] }
+itertools = "0.14.0"
 pest = "2.8.6"
 pest_derive = "2.8.6"
 raw-window-handle = "0.6"

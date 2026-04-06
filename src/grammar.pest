@@ -1,13 +1,20 @@
-ws            = _{ " " | "\t" }
+WHITESPACE    = _{ " " | "\t" }
 
-command       = { SOI ~ ws* ~ token ~ (ws+ ~ token)* ~ ws* ~ EOI }
+program       =  { SOI ~ stmt+ ~ EOI }
+stmt          =  { background | chain | pipeline | sub | command }
+background    =  { (chain | pipeline | sub | command) ~ "&" }
+chain         =  { (pipeline | sub | command) ~ (connector ~ (pipeline | sub | command))+ }
+pipeline      =  { (sub | command) ~ ("|" ~ (sub | command))+ }
+sub           =  { "(" ~ stmt+ ~ ")" }
+command       =  { token+ }
+
+connector     =  { "&&" | "||" }
+
 token         = _{ single_quoted | double_quoted | unquoted }
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
-double_quoted = @{ "\"" ~ ("\\" ~ ANY | (!"\"" ~ ANY))* ~ "\"" }
-
-unquoted = @{
-    ( (!(" " | "\t" | "'" | "\"" | "\\") ~ ANY)
-    | ("\\" ~ ANY)
+double_quoted = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
+unquoted      = @{
+    ( !(" " | "\t" | "\n" | "'" | "\"" | "\\" | "|" | "&" | "(" | ")") ~ ANY
+    | "\\" ~ ANY
     )+
 }
-
