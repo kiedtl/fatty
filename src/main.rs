@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::cell;
 
 //use brush_core::{self as bc, Shell};
+use itertools::Itertools;
 use vte;
 use rustix::fd::OwnedFd;
 use rustix::process::{kill_process, Pid, Signal};
@@ -91,6 +92,25 @@ pub enum ExitReason {
     },
 }
 
+impl From<rustix::process::WaitStatus> for ExitReason {
+    fn from(status: rustix::process::WaitStatus) -> ExitReason {
+        let raw = status.as_raw();
+        let cored = raw & 0x80 != 0;
+
+        if status.signaled() && let Some(sigval) = status.terminating_signal() {
+            if let Some(signal) = Signal::from_named_raw(sigval) {
+                ExitReason::Signal { signal, cored }
+            } else {
+                ExitReason::Unknown { sigval: Some(sigval), cored }
+            }
+        } else if let Some(exit) = status.exit_status() {
+            ExitReason::Normal(exit)
+        } else {
+            ExitReason::Unknown { sigval: None, cored }
+        }
+    }
+}
+
 struct App {
     master: OwnedFd,
     input: String,
@@ -102,7 +122,7 @@ struct App {
     vwidth: cell::Cell<Option<f32>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Message {
     None,
     Input(String),
@@ -159,6 +179,7 @@ impl App {
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
                         let program = vm::compile(&parsed);
+                        //vm::print_program(&program);
 
                         let font_width = utils::measure_text(
                             "m", f32::INFINITY, FONT_SIZE, 1., term::Cell::default().iced_font()
@@ -174,10 +195,11 @@ impl App {
                         self.execs.push(Execution {
                             string,
                             vm: vm::VM {
-                                program,
+                                program: Arc::new(program),
                                 pc: (0, None),
                                 waiting_on: None,
                                 child_exit_stack: Vec::new(),
+                                join_handles: Vec::new(),
                                 done: false,
                             },
                             term: term::Term::new(width),
@@ -195,12 +217,16 @@ impl App {
             Message::ContinueProgram => {
                 if let Some(current) = self.execs.last_mut() {
                     assert!(current.vm.waiting_on == None);
-                    current.vm.execute();
+                    loop {
+                        current.vm.execute();
 
-                    if current.vm.done {
-                        current.exit_reason = current.vm.child_exit_stack.pop();
+                        if current.vm.done {
+                            current.exit_reason = current.vm.child_exit_stack.pop();
+                            break;
+                        } else if current.vm.waiting_on.is_some() {
+                            break;
+                        }
                     }
-
                     self.poll_pty();
                 }
             },
@@ -214,7 +240,7 @@ impl App {
 
                 match reason {
                     ExitReason::Signal { cored: true, .. }
-                    | ExitReason::Unknown { cored: true, .. } => print!(" (core dumped"),
+                    | ExitReason::Unknown { cored: true, .. } => print!(" (core dumped)"),
                     _ => (),
                 }
 
@@ -362,7 +388,6 @@ impl App {
     }
 
     fn poll_pty(&mut self) {
-        let i = std::time::Instant::now();
         if let Some(last) = self.execs.last_mut() {
             let mut buf = [0u8; 65535];
             match rustix::io::read(&self.master, &mut buf) {
@@ -386,23 +411,7 @@ pub fn wait_on(pid: Pid) -> Subscription<ExitReason> {
             .expect("spawn_blocking panicked");
 
             match result {
-                Ok(Some((_, status))) => {
-                    let raw = status.as_raw();
-                    let cored = raw & 0x80 != 0;
-
-                    return
-                        if status.signaled() && let Some(sigval) = status.terminating_signal() {
-                            if let Some(signal) = Signal::from_named_raw(sigval) {
-                                Some((ExitReason::Signal { signal, cored }, None))
-                            } else {
-                                Some((ExitReason::Unknown { sigval: Some(sigval), cored }, None))
-                            }
-                        } else if let Some(exit) = status.exit_status() {
-                            Some((ExitReason::Normal(exit), None))
-                        } else {
-                            Some((ExitReason::Unknown { sigval: None, cored }, None))
-                        };
-                },
+                Ok(Some((_, status))) => return Some((ExitReason::from(status), None)),
                 Ok(None) => unreachable!(),
                 Err(_) => unreachable!(),
             }

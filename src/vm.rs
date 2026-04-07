@@ -1,7 +1,11 @@
-use itertools::Itertools;
+use std::sync::Arc;
+use std::time::Duration;
 
+use crate::log;
 use crate::{ExitReason, Execution};
 use crate::parser::*;
+
+use itertools::Itertools;
 use rustix::process::Pid;
 
 // pub enum RunCondition {
@@ -19,23 +23,27 @@ pub enum Instr {
         commands: Vec<Command>,
         // cond: RunCondition,
     },
+    CallAsync {
+        block: usize,
+    },
     DoneProgram,
 }
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    contents: Vec<Instr>,
+    pub contents: Vec<Instr>,
 }
 
 pub fn compile(ast: &[Ast]) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    let mut base_block = Block { contents: Vec::new() };
+    let mut blocks = vec![Block { contents: Vec::new() }];
+
+    let mut base_block = Vec::new();
     for ast in ast {
-        compile_ast(ast, &mut base_block.contents, &mut blocks);
+        compile_ast(ast, &mut base_block, &mut blocks);
     }
 
-    base_block.contents.push(Instr::DoneProgram);
-    blocks.insert(0, base_block);
+    base_block.push(Instr::DoneProgram);
+    blocks[0].contents = base_block;
 
     blocks
 }
@@ -59,15 +67,26 @@ fn compile_ast(ast: &Ast, out: &mut Vec<Instr>, blocks: &mut Vec<Block>) {
                 todo!()
             }
         }
+        Ast::Stmt(Stmt::Background(ast)) => {
+            out.push(Instr::CallAsync { block: blocks.len() });
+
+            let mut b = Block { contents: Vec::new() };
+            compile_ast(ast, &mut b.contents, blocks);
+            b.contents.push(Instr::DoneProgram);
+            blocks.push(b);
+        },
         _ => todo!(),
     }
 }
 
+pub type JobJoinHandle = tokio::task::JoinHandle<Option<ExitReason>>;
+
 pub struct VM {
-    pub program: Vec<Block>,
+    pub program: Arc<Vec<Block>>,
     pub pc: (usize, Option<usize>),
     pub waiting_on: Option<Pid>,
     pub child_exit_stack: Vec<ExitReason>,
+    pub join_handles: Vec<JobJoinHandle>,
     pub done: bool,
 }
 
@@ -126,6 +145,35 @@ impl VM {
 
                 self.waiting_on = last_pid;
             },
+            Instr::CallAsync { block } => {
+                let mut vm = VM {
+                    program: self.program.clone(),
+                    pc: (*block, None),
+                    waiting_on: None,
+                    child_exit_stack: Vec::new(),
+                    join_handles: Vec::new(),
+                    done: false,
+                };
+
+                let handle = tokio::spawn(async move {
+                    loop {
+                        if vm.done {
+                            break;
+                        } else if let Some(pid) = vm.waiting_on {
+                            match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG) {
+                                Ok(Some((_, status))) => vm.handle_exit(pid, ExitReason::from(status)),
+                                Ok(None) => tokio::time::sleep(Duration::from_millis(20)).await,
+                                Err(_) => unreachable!(),
+                            }
+                        } else {
+                            vm.execute();
+                        }
+                    }
+                    vm.child_exit_stack.pop()
+                });
+
+                self.join_handles.push(handle);
+            },
             Instr::DoneProgram => self.done = true,
         }
     }
@@ -136,6 +184,27 @@ impl VM {
             self.child_exit_stack.push(reason);
         } else {
             unreachable!();
+        }
+    }
+}
+
+pub fn print_program(p: &[Block]) {
+    for (blocki, block) in p.iter().enumerate() {
+        log!("Block {blocki}:");
+        for instr in &block.contents {
+            match instr {
+                Instr::Run { command: Command { argv } }
+                    => log!("  - run {}", argv.iter().map(|t| t.to_string()).join(" ")),
+                Instr::RunSimplePipeline { commands }
+                    => {
+                        log!("  - create_pipe");
+                        for command in commands {
+                            log!("  - run {}", command.argv.iter().map(|t| t.to_string()).join(" "));
+                        }
+                    },
+                Instr::CallAsync { block } => log!("  - call_async {block}"),
+                Instr::DoneProgram => log!("  - done"),
+            }
         }
     }
 }
