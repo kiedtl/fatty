@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::log;
 use crate::{ExitReason, Execution};
 use crate::parser::*;
 
 use itertools::Itertools;
 use rustix::process::Pid;
+use rustix::fd::{AsRawFd, OwnedFd, BorrowedFd};
 
 // pub enum RunCondition {
 //     PreviousFailed,
@@ -91,7 +91,7 @@ pub struct VM {
 }
 
 impl VM {
-    pub fn execute(&mut self) {
+    pub fn execute(&mut self, slave: Option<BorrowedFd<'_>>) {
         assert!(!self.done);
         assert!(self.waiting_on.is_none());
 
@@ -105,10 +105,15 @@ impl VM {
         match &self.program[self.pc.0].contents[instr_pc] {
             Instr::Run { command: Command { argv } } => {
                 let (cmd, args) = prepare_invocation(argv);
-                let child = std::process::Command::new(cmd)
-                    .args(args)
-                    .spawn()
-                    .unwrap();
+                let mut command = std::process::Command::new(cmd);
+                command.args(args);
+                if let Some(slave) = slave {
+                    command.stdin(rustix::io::dup(slave).unwrap());
+                    command.stdout(rustix::io::dup(slave).unwrap());
+                    command.stderr(rustix::io::dup(slave).unwrap());
+                }
+
+                let child = command.spawn().unwrap();
 
                 self.waiting_on = Some(Pid::from_child(&child));
             },
@@ -132,11 +137,21 @@ impl VM {
                     let (cmd, args) = prepare_invocation(&command.argv);
                     let mut command = std::process::Command::new(cmd);
                     command.args(args);
+
                     if let Some(writer) = writer.take() {
                         command.stdout(writer);
+                    } else if let Some(slave) = slave {
+                        command.stdout(rustix::io::dup(slave).unwrap());
                     }
+
                     if let Some(reader) = reader {
                         command.stdin(reader);
+                    } else if let Some(slave) = slave {
+                        command.stdin(rustix::io::dup(slave).unwrap());
+                    }
+
+                    if let Some(slave) = slave {
+                        command.stderr(rustix::io::dup(slave).unwrap());
                     }
 
                     let child = command.spawn().unwrap();
@@ -166,7 +181,7 @@ impl VM {
                                 Err(_) => unreachable!(),
                             }
                         } else {
-                            vm.execute();
+                            vm.execute(None);
                         }
                     }
                     vm.child_exit_stack.pop()
@@ -190,20 +205,20 @@ impl VM {
 
 pub fn print_program(p: &[Block]) {
     for (blocki, block) in p.iter().enumerate() {
-        log!("Block {blocki}:");
+        println!("Block {blocki}:");
         for instr in &block.contents {
             match instr {
                 Instr::Run { command: Command { argv } }
-                    => log!("  - run {}", argv.iter().map(|t| t.to_string()).join(" ")),
+                    => println!("  - run {}", argv.iter().map(|t| t.to_string()).join(" ")),
                 Instr::RunSimplePipeline { commands }
                     => {
-                        log!("  - create_pipe");
+                        println!("  - create_pipe");
                         for command in commands {
-                            log!("  - run {}", command.argv.iter().map(|t| t.to_string()).join(" "));
+                            println!("  - run {}", command.argv.iter().map(|t| t.to_string()).join(" "));
                         }
                     },
-                Instr::CallAsync { block } => log!("  - call_async {block}"),
-                Instr::DoneProgram => log!("  - done"),
+                Instr::CallAsync { block } => println!("  - call_async {block}"),
+                Instr::DoneProgram => println!("  - done"),
             }
         }
     }

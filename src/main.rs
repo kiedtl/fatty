@@ -9,7 +9,7 @@ use std::cell;
 //use brush_core::{self as bc, Shell};
 use itertools::Itertools;
 use vte;
-use rustix::fd::OwnedFd;
+use rustix::fd::{AsFd, OwnedFd};
 use rustix::process::{kill_process, Pid, Signal};
 //use tokio::sync::Mutex as TokioMutex;
 
@@ -30,27 +30,15 @@ use styles::CS;
 
 const FONT_SIZE: f32 = 15.0;
 
-static STDERR: Mutex<Option<std::fs::File>> = Mutex::new(None);
-fn set_panic_output(w: OwnedFd) {
-    *STDERR.lock().unwrap() = Some(std::fs::File::from(w));
-}
-
-fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
-        if let Ok(mut guard) = STDERR.lock() {
-            if let Some(w) = guard.as_mut() {
-                let _ = writeln!(w, "panic: {info}");
-                return;
-            }
-        }
-        eprintln!("panic: {info}");
-    }));
+static PTY_MASTER: Mutex<Option<std::fs::File>> = Mutex::new(None);
+fn set_pty_output(w: &OwnedFd) {
+    *PTY_MASTER.lock().unwrap() = Some(std::fs::File::from(rustix::io::dup(w).unwrap()));
 }
 
 #[macro_export]
-macro_rules! log {
+macro_rules! outln {
     ($fmt:literal $(, $e:expr)*) => {
-        if let Ok(mut guard) = crate::STDERR.lock() {
+        if let Ok(mut guard) = crate::PTY_MASTER.lock() {
             use std::io::Write;
             if let Some(w) = guard.as_mut() {
                 let _ = writeln!(w, $fmt, $($e,)*);
@@ -59,13 +47,22 @@ macro_rules! log {
     }
 }
 
+#[macro_export]
+macro_rules! out {
+    ($fmt:literal $(, $e:expr)*) => {
+        if let Ok(mut guard) = crate::PTY_MASTER.lock() {
+            use std::io::Write;
+            if let Some(w) = guard.as_mut() {
+                let _ = write!(w, $fmt, $($e,)*);
+            }
+        }
+    }
+}
+
 pub type Elem<'a> = Element<'a, Message, styles::Theme, iced::Renderer>;
 
 fn main() -> iced::Result {
-    install_panic_hook();
-    set_panic_output(rustix::io::dup(std::io::stderr()).unwrap());
-
-    iced::application(App::new, App::update, App::view)
+    iced::application(move || App::new(), App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)
         .theme(App::theme)
@@ -113,6 +110,7 @@ impl From<rustix::process::WaitStatus> for ExitReason {
 
 struct App {
     master: OwnedFd,
+    slave: OwnedFd,
     input: String,
     execs: Vec<Execution>,
     ansi: vte::ansi::Processor,
@@ -141,25 +139,26 @@ impl App {
     fn new() -> Self { //(Self, Task<Message>) {
         //let (_id, open) = window::open(window::Settings::default());
 
-        let pty = rustix_openpty::openpty(None, None).unwrap();
-        rustix::stdio::dup2_stdout(&pty.user).unwrap();
-        rustix::stdio::dup2_stderr(&pty.user).unwrap();
-        rustix::stdio::dup2_stdin(&pty.user).unwrap();
-
-        let master_flags = rustix::fs::fcntl_getfl(&pty.controller).unwrap();
-        rustix::fs::fcntl_setfl(&pty.controller, master_flags | rustix::fs::OFlags::NONBLOCK).unwrap();
-
         // let shell = tokio::task::block_in_place(|| {
         //     tokio::runtime::Handle::current().block_on(async {
         //         Shell::new(Default::default()).await.unwrap()
         //     })
         // });
 
+        let pty = rustix_openpty::openpty(None, None).unwrap();
+        let master_flags = rustix::fs::fcntl_getfl(&pty.controller).unwrap();
+        rustix::fs::fcntl_setfl(
+            &pty.controller,
+            master_flags | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC
+        ).unwrap();
+        set_pty_output(&pty.controller);
+
         //(
             Self {
             input: String::new(),
             execs: Vec::new(),
             master: pty.controller,
+            slave: pty.user,
             ansi: vte::ansi::Processor::new(),
             theme: styles::Theme::gruvbox(),
             //shell: Arc::new(TokioMutex::new(shell)),
@@ -209,7 +208,7 @@ impl App {
                         return self.update(Message::ContinueProgram);
                     },
                     Err(err) => {
-                        println!("{err}");
+                        outln!("{err}");
                         self.poll_pty();
                     }
                 }
@@ -218,7 +217,7 @@ impl App {
                 if let Some(current) = self.execs.last_mut() {
                     assert!(current.vm.waiting_on == None);
                     loop {
-                        current.vm.execute();
+                        current.vm.execute(Some(self.slave.as_fd()));
 
                         if current.vm.done {
                             current.exit_reason = current.vm.child_exit_stack.pop();
@@ -233,18 +232,21 @@ impl App {
             Message::ChildExited(pid, reason) => {
                 match reason {
                     ExitReason::Normal(_) => (),
-                    ExitReason::Signal { signal, .. } => print!("{}", utils::signal_to_string(signal)),
-                    ExitReason::Unknown { sigval: Some(s), .. } => print!("Signal({s})"),
-                    ExitReason::Unknown { sigval: None, .. } => print!("Exited (unknown)"),
+                    ExitReason::Signal { signal, .. } => out!("{}", utils::signal_to_string(signal)),
+                    ExitReason::Unknown { sigval: Some(s), .. } => out!("Signal({s})"),
+                    ExitReason::Unknown { sigval: None, .. } => out!("Exited (unknown)"),
                 }
 
                 match reason {
                     ExitReason::Signal { cored: true, .. }
-                    | ExitReason::Unknown { cored: true, .. } => print!(" (core dumped)"),
+                    | ExitReason::Unknown { cored: true, .. } => out!(" (core dumped)"),
                     _ => (),
                 }
 
-                println!(""); // Newline
+                match reason {
+                    ExitReason::Normal(_) => (),
+                    _ => outln!(""), // Newline
+                }
 
                 if let Some(current) = self.execs.last_mut() {
                     current.vm.handle_exit(pid, reason);
@@ -351,7 +353,9 @@ impl App {
 
         let mut input = text_input("rm -rf /", &self.input);
 
-        if let Some(last) = self.execs.last() && !last.vm.done {} else {
+        if let Some(last) = self.execs.last() && !last.vm.done {
+            // Input disabled.
+        } else {
             input = input
                 .on_input(Message::Input)
                 .on_submit(Message::Run);
