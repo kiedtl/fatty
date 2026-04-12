@@ -1,10 +1,13 @@
 #![allow(unused_imports)]
 
-use std::sync::{Arc, Mutex};
-use std::process::{Command, Child};
-use std::time::Duration;
-use std::io::{Read, Write};
 use std::cell;
+use std::fs::DirEntry;
+use std::io::{Read, Write};
+use std::process::{Command, Child};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::MetadataExt;
 
 //use brush_core::{self as bc, Shell};
 use itertools::Itertools;
@@ -17,7 +20,8 @@ use iced::futures::stream;
 use iced::window;
 use iced::{Event, Element, Task, Subscription, Length};
 use iced::keyboard::{self, key, Modifiers};
-use iced::widget::{container, Column, row, text::{Rich, Span}, column, text, text_input, scrollable, responsive, space};
+use iced::widget::{container, Row, table::{self, Table}, Column, row, text::{Rich, Span}, column, text, text_input, scrollable, responsive, space};
+use iced::advanced::text::Ellipsis;
 
 mod colors;
 mod parser;
@@ -27,6 +31,7 @@ mod utils;
 mod vm;
 
 use styles::CS;
+use vm::VMStatus;
 
 const FONT_SIZE: f32 = 15.0;
 
@@ -112,6 +117,7 @@ struct App {
     master: OwnedFd,
     slave: OwnedFd,
     input: String,
+    listing: Vec<DirEntry>,
     execs: Vec<Execution>,
     ansi: vte::ansi::Processor,
     theme: styles::Theme,
@@ -127,6 +133,7 @@ pub enum Message {
     Run,
     ContinueProgram,
     ChildExited(Pid, ExitReason),
+    JobResolved(usize, usize),
     Poll,
     Signal(Signal),
 }
@@ -156,6 +163,7 @@ impl App {
         //(
             Self {
             input: String::new(),
+            listing: listing(),
             execs: Vec::new(),
             master: pty.controller,
             slave: pty.user,
@@ -198,7 +206,8 @@ impl App {
                                 pc: (0, None),
                                 waiting_on: None,
                                 child_exit_stack: Vec::new(),
-                                join_handles: Vec::new(),
+                                jobs: Vec::new(),
+                                status: None,
                                 done: false,
                             },
                             term: term::Term::new(width),
@@ -254,6 +263,9 @@ impl App {
 
                 return self.update(Message::ContinueProgram);
             },
+            Message::JobResolved(_exec_ind, _job_ind) => {
+                // todo
+            },
             Message::Poll => {
                 self.poll_pty();
             }
@@ -298,10 +310,109 @@ impl App {
             _ => Subscription::none(),
         };
 
-        Subscription::batch([poll, keys, wait])
+        let jobs = watch_jobs(self);
+
+        Subscription::batch([poll, keys, wait, jobs])
     }
 
     fn view(&self) -> Elem<'_> {
+        let exit_reason = |reason| {
+            match reason {
+                None => text("Running"),
+                Some(ExitReason::Normal(code)) => text(code.to_string()),
+                Some(ExitReason::Signal { signal, .. }) => text(utils::signal_to_string(signal)),
+                Some(ExitReason::Unknown { sigval: Some(s), .. }) => text(format!("Signal({s})")),
+                Some(ExitReason::Unknown { sigval: None, .. }) => text("Exited (unknown)"),
+            }
+        };
+
+        let listing = Table::new(
+            [
+                table::column(text("Mode"), |d: &DirEntry| {
+                    let met = d.metadata().unwrap();
+                    let mode = met.permissions().mode();
+                    text(utils::Mode(mode).to_string())
+                        .font(iced::Font {
+                            family: iced::font::Family::name("Drafting* Mono"),
+                            ..Default::default()
+                        })
+                }),
+                table::column(text("User"), |d: &DirEntry| {
+                    let met = d.metadata().unwrap();
+                    let uname = unsafe {
+                        let r = libc::getpwuid(met.uid());
+                        if r.is_null() {
+                            None
+                        } else {
+                            Some(
+                                std::ffi::CStr::from_ptr((*r).pw_name)
+                                    .to_string_lossy()
+                                    .to_string()
+                            )
+                        }
+                    };
+
+                    text(uname.unwrap_or("?".to_string()))
+                        .ellipsis(Ellipsis::End)
+                }),
+                table::column(text("Size"), |d: &DirEntry| {
+                    let met = d.metadata().unwrap();
+                    let e: Elem<'_> = if met.is_dir() {
+                        space()
+                            .into()
+                    } else {
+                        text(utils::fmt_size(met.len()))
+                            .font(iced::Font {
+                                family: iced::font::Family::name("Drafting* Mono"),
+                                ..Default::default()
+                            })
+                            .into()
+                    };
+                    e
+                }),
+                table::column(text("Name"), |d: &DirEntry| {
+                    let met = d.metadata().unwrap();
+                    let mut fname = d.file_name().to_string_lossy().to_string();
+                    if met.is_dir() {
+                        fname.push('/');
+                    }
+                    text(fname)
+                })
+            ],
+            &self.listing,
+        )
+            .padding_y(1);
+
+        let mut jobs = Column::new()
+            .spacing(1);
+
+        for exec in &self.execs {
+            for job in &exec.vm.jobs {
+                jobs = jobs.push(
+                    container({
+                        let e: Elem<'_> = match &*job.status.borrow() {
+                            VMStatus::Waiting { command, pid }
+                                => text(format!("{} ({})", command.to_string(), pid)).into(),
+                            VMStatus::Done { command, reason }
+                            | VMStatus::Resolved { command: Some(command), reason: Some(reason) }
+                                => row![
+                                    text(command.to_string())
+                                        .width(Length::Fill),
+                                    exit_reason(Some(*reason)),
+                                ].into(),
+                            VMStatus::None
+                            | VMStatus::Resolved { .. }
+                                => text("...").into(),
+                        };
+                        e
+                    })
+                        .class(CS::Box)
+                        .padding(3)
+                        .width(Length::Fill)
+                );
+            }
+        }
+
         let mut execs = Column::new()
             .spacing(1);
 
@@ -314,13 +425,7 @@ impl App {
                                 text(&exec.string)
                             )
                                 .width(Length::Fill),
-                            match exec.exit_reason {
-                                None => text("Running"),
-                                Some(ExitReason::Normal(code)) => text(code.to_string()),
-                                Some(ExitReason::Signal { signal, .. }) => text(utils::signal_to_string(signal)),
-                                Some(ExitReason::Unknown { sigval: Some(s), .. }) => text(format!("Signal({s})")),
-                                Some(ExitReason::Unknown { sigval: None, .. }) => text("Exited (unknown)"),
-                            }
+                            exit_reason(exec.exit_reason),
                         ],
                     )
                         .class(CS::Box)
@@ -362,27 +467,62 @@ impl App {
         }
 
         container(
-            column![
-                scrollable(
-                    container(execs)
-                        .padding(iced::Padding {
-                            right: 15.,
-                            ..Default::default()
-                        })
-                )
-                    .anchor_bottom()
-                    .height(Length::Fill),
-                responsive(move |size| {
-                    self.vwidth.set(Some(size.width));
-                    space()
-                        .height(1.)
-                        .into()
-                })
-                    .height(Length::Shrink)
-                    .width(Length::Fill),
-                input,
+            row![
+                column![
+                    scrollable(
+                        container(execs)
+                            .padding(iced::Padding {
+                                right: 15.,
+                                ..Default::default()
+                            })
+                    )
+                        .anchor_bottom()
+                        .height(Length::Fill),
+                    responsive(move |size| {
+                        self.vwidth.set(Some(size.width));
+                        space()
+                            .height(1.)
+                            .into()
+                    })
+                        .height(Length::Shrink)
+                        .width(Length::Fill),
+                    input,
+                ]
+                    .width(Length::FillPortion(2)),
+                column![
+                    scrollable(
+                        container(listing)
+                            .padding(iced::Padding {
+                                bottom: 5.,
+                                top: 5.,
+                                right: 15.,
+                                left: 5.,
+                            })
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .class(CS::WhiteBox)
+                    )
+                        .height(Length::FillPortion(2))
+                        .width(Length::Fill),
+                    scrollable(
+                        container(jobs)
+                            .padding(iced::Padding {
+                                bottom: 5.,
+                                top: 5.,
+                                right: 15.,
+                                left: 5.,
+                            })
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .class(CS::WhiteBox)
+                    )
+                        .height(Length::FillPortion(1))
+                        .width(Length::Fill)
+                        .anchor_bottom()
+                ]
+                    .width(Length::FillPortion(1)),
             ]
-                .spacing(2)
+                .spacing(4)
         )
             .padding(5)
             .width(Length::Fill)
@@ -421,4 +561,89 @@ pub fn wait_on(pid: Pid) -> Subscription<ExitReason> {
             }
         }
     }))
+}
+
+fn watch_jobs(app: &App) -> Subscription<Message> {
+    use tokio::sync::watch;
+    use std::hash::{Hash, Hasher};
+    use futures::SinkExt;
+    use futures::channel::mpsc::Sender;
+
+    #[derive(Clone)]
+    struct Watching {
+        exec_ind: usize,
+        job_ind: usize,
+        receiver: watch::Receiver<VMStatus>,
+    }
+
+    impl Hash for Watching {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.exec_ind.hash(state);
+            self.job_ind.hash(state);
+        }
+    }
+
+    // Collect all (exec_index, job_index, receiver) for jobs that are NOT yet resolved
+    let receivers: Vec<Watching> = app
+        .execs
+        .iter()
+        .enumerate()
+        .flat_map(|(exec_ind, exec)| {
+            exec.vm
+                .jobs
+                .iter()
+                .enumerate()
+                .filter(|(_, job)| !job.is_done())
+                .map(move |(job_ind, job)| Watching { exec_ind, job_ind, receiver: job.status.clone() })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    if receivers.is_empty() {
+        return Subscription::none();
+    }
+
+    Subscription::run_with(
+        receivers,
+        |receivers| {
+            let receivers = receivers.clone();
+            iced::stream::channel(16, move |mut output: Sender<Message>| async move {
+                loop {
+                    let futures: Vec<_> = receivers
+                        .iter()
+                        .map(|Watching { exec_ind, job_ind, receiver: rx }| {
+                            let mut rx = rx.clone();
+                            let exec_idx = *exec_ind;
+                            let job_idx = *job_ind;
+                            Box::pin(async move {
+                                // Loop until the job resolves
+                                loop {
+                                    rx.changed().await.ok();
+                                    if matches!(&*rx.borrow(), VMStatus::Resolved { .. }) {
+                                        return (exec_idx, job_idx);
+                                    }
+                                }
+                            })
+                        })
+                        .collect();
+
+                    let ((exec_index, job_index), _, _) = futures::future::select_all(futures).await;
+
+                    output
+                        .send(Message::JobResolved(exec_index, job_index))
+                        .await
+                        .ok();
+                }
+            })
+        }
+    )
+}
+
+fn listing() -> Vec<DirEntry> {
+    let mut entries = std::fs::read_dir(".")
+        .unwrap()
+        .map(|res| res.unwrap())
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|i| i.file_name());
+    entries
 }

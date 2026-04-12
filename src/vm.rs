@@ -7,6 +7,7 @@ use crate::parser::*;
 use itertools::Itertools;
 use rustix::process::Pid;
 use rustix::fd::{AsRawFd, OwnedFd, BorrowedFd};
+use tokio::sync::watch;
 
 // pub enum RunCondition {
 //     PreviousFailed,
@@ -79,14 +80,41 @@ fn compile_ast(ast: &Ast, out: &mut Vec<Instr>, blocks: &mut Vec<Block>) {
     }
 }
 
-pub type JobJoinHandle = tokio::task::JoinHandle<Option<ExitReason>>;
+pub struct Job {
+    pub status: watch::Receiver<VMStatus>,
+}
+
+impl Job {
+    pub fn is_done(&self) -> bool {
+        matches!(&*self.status.borrow(), VMStatus::Resolved { .. })
+    }
+}
+
+#[derive(Default)]
+pub enum VMStatus {
+    #[default]
+    None,
+    Waiting {
+        command: Command,
+        pid: Pid,
+    },
+    Done {
+        command: Command,
+        reason: ExitReason,
+    },
+    Resolved {
+        command: Option<Command>,
+        reason: Option<ExitReason>,
+    }
+}
 
 pub struct VM {
     pub program: Arc<Vec<Block>>,
     pub pc: (usize, Option<usize>),
     pub waiting_on: Option<Pid>,
     pub child_exit_stack: Vec<ExitReason>,
-    pub join_handles: Vec<JobJoinHandle>,
+    pub status: Option<watch::Sender<VMStatus>>,
+    pub jobs: Vec<Job>,
     pub done: bool,
 }
 
@@ -103,19 +131,22 @@ impl VM {
         self.pc.1 = Some(instr_pc);
 
         match &self.program[self.pc.0].contents[instr_pc] {
-            Instr::Run { command: Command { argv } } => {
-                let (cmd, args) = prepare_invocation(argv);
-                let mut command = std::process::Command::new(cmd);
-                command.args(args);
+            Instr::Run { command } => {
+                let (cmd, args) = prepare_invocation(&command.argv);
+                let mut pcmd = std::process::Command::new(&cmd);
+                pcmd.args(args);
                 if let Some(slave) = slave {
-                    command.stdin(rustix::io::dup(slave).unwrap());
-                    command.stdout(rustix::io::dup(slave).unwrap());
-                    command.stderr(rustix::io::dup(slave).unwrap());
+                    pcmd.stdin(rustix::io::dup(slave).unwrap());
+                    pcmd.stdout(rustix::io::dup(slave).unwrap());
+                    pcmd.stderr(rustix::io::dup(slave).unwrap());
                 }
 
-                let child = command.spawn().unwrap();
-
-                self.waiting_on = Some(Pid::from_child(&child));
+                let child = pcmd.spawn().unwrap();
+                let pid = Pid::from_child(&child);
+                self.waiting_on = Some(pid);
+                if let Some(sender) = &self.status {
+                    sender.send(VMStatus::Waiting { pid, command: command.clone() }).unwrap();
+                }
             },
             Instr::RunSimplePipeline { commands } => {
                 use std::process::Stdio;
@@ -159,18 +190,27 @@ impl VM {
                 }
 
                 self.waiting_on = last_pid;
+                if let Some(sender) = &self.status {
+                    sender.send(VMStatus::Waiting {
+                        command: commands.last().unwrap().clone(),
+                        pid: last_pid.unwrap(),
+                    }).unwrap();
+                }
             },
             Instr::CallAsync { block } => {
+                let (tx, rx) = watch::channel(VMStatus::default());
+
                 let mut vm = VM {
                     program: self.program.clone(),
                     pc: (*block, None),
                     waiting_on: None,
                     child_exit_stack: Vec::new(),
-                    join_handles: Vec::new(),
+                    jobs: Vec::new(),
+                    status: Some(tx),
                     done: false,
                 };
 
-                let handle = tokio::spawn(async move {
+                tokio::spawn(async move {
                     loop {
                         if vm.done {
                             break;
@@ -184,12 +224,24 @@ impl VM {
                             vm.execute(None);
                         }
                     }
-                    vm.child_exit_stack.pop()
                 });
 
-                self.join_handles.push(handle);
+                self.jobs.push(Job {
+                    status: rx,
+                });
             },
-            Instr::DoneProgram => self.done = true,
+            Instr::DoneProgram => {
+                self.done = true;
+                if let Some(sender) = &self.status {
+                    sender.send_modify(move |previous| {
+                        match std::mem::take(previous) {
+                            VMStatus::Done { command, reason } => *previous = VMStatus::Resolved { command: Some(command), reason: Some(reason) },
+                            VMStatus::None => *previous = VMStatus::Resolved { command: None, reason: None },
+                            _ => unreachable!(),
+                        }
+                    });
+                }
+            },
         }
     }
 
@@ -197,6 +249,13 @@ impl VM {
         if Some(pid) == self.waiting_on {
             self.waiting_on = None;
             self.child_exit_stack.push(reason);
+            if let Some(sender) = &self.status {
+                sender.send_modify(move |previous| {
+                    let VMStatus::Waiting { command, .. } = std::mem::take(previous)
+                        else { unreachable!() };
+                    *previous = VMStatus::Done { command, reason };
+                });
+            }
         } else {
             unreachable!();
         }

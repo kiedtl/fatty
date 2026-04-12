@@ -5,16 +5,18 @@ edition = "2024"
 
 [dependencies]
 bitflags = "2.11.0"
+futures = "0.3.32"
 #brush-core = "0.4.0"
 glob = "0.3.3"
 iced = { git = "https://github.com/iced-rs/iced", rev = "bc3a12c6840430a01b7300b21e5543d3c6e7a82e", features = [ "advanced", "image", "canvas", "lazy", "qr_code", "tokio" ]}
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "webp"] }
 itertools = "0.14.0"
+libc = "0.2.184"
 pest = "2.8.6"
 pest_derive = "2.8.6"
 raw-window-handle = "0.6"
 rustix = "1.1.4"
 rustix-openpty = "0.2.0"
-tokio = "1.51.0"
+tokio = { version = "1.51.0", features = ["sync"] }
 #smol = "2.0"
 vte = { version = "0.15.0", features = ["bitflags", "ansi"] }

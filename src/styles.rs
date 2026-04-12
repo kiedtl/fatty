@@ -1,5 +1,5 @@
 use iced::{Gradient, Background, Border, Color};
-use iced::widget::{container, button, scrollable, text_input};
+use iced::widget::{container, button, scrollable, text_input, table};
 
 use vte::ansi::Rgb;
 use crate::colors::Hsv;
@@ -144,6 +144,7 @@ pub enum CS {
     Outer,
     Base,
     Box,
+    WhiteBox,
 }
 
 impl CS {
@@ -175,6 +176,17 @@ impl CS {
                     width: 1.,
                     radius: (4.).into(),
                     color: t.bg(6),
+                },
+                shadow: Default::default(),
+                snap: true,
+            },
+            CS::WhiteBox => container::Style {
+                text_color: Some(t.fg),
+                background: Some(Background::Color(t.white)),
+                border: Border {
+                    width: 1.,
+                    radius: (4.).into(),
+                    color: t.bg(4),
                 },
                 shadow: Default::default(),
                 snap: true,
@@ -217,6 +229,29 @@ impl button::Catalog for Theme {
     fn style(&self, class: &Self::Class<'_>, status: button::Status) -> button::Style {
         class(self, status)
     }
+}
+
+impl table::Catalog for Theme {
+    type Class<'a> = TableStyle;
+
+    fn default<'a>() -> Self::Class<'a> {
+        TableStyle::default()
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> table::Style {
+        match class {
+            TableStyle::Base => table::Style {
+                separator_x: Background::Color(self.white),
+                separator_y: Background::Color(self.ac(2)),
+            },
+        }
+    }
+}
+
+#[derive(Default)]
+pub enum TableStyle {
+    #[default]
+    Base,
 }
 
 pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {

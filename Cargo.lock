@@ -991,10 +991,12 @@ name = "fatty"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.11.0",
+ "futures",
  "glob",
  "iced",
  "image",
  "itertools",
+ "libc",
  "pest",
  "pest_derive",
  "raw-window-handle",

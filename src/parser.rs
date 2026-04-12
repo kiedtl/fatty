@@ -1,3 +1,5 @@
+use itertools::Itertools;
+
 use pest::Parser;
 use pest::iterators::Pair;
 use pest_derive::Parser;
@@ -24,6 +26,15 @@ impl Token {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
     pub argv: Vec<Token>,
+}
+
+impl Command {
+    pub fn to_string(&self) -> String {
+        self.argv
+            .iter()
+            .map(|t| t.to_string())
+            .join(" ")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
