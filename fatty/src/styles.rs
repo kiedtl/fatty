@@ -47,10 +47,10 @@ impl Theme {
             white: Color::from_rgb8(0xfb, 0xfb, 0xe7),
 
             bg_hue: 33,
-            bg_sat: 0.14, //0.153,
+            bg_sat: 0.07, //0.14, //0.153,
 
             ac_hue: 19,
-            ac_sat: 0.61,
+            ac_sat: 0.61, //0.61,
         }
     }
 
@@ -160,7 +160,7 @@ impl CS {
         match self {
             CS::Outer => container::Style {
                 text_color: Some(t.fg),
-                background: Some(Background::Color(t.bg(15))),
+                background: Some(Background::Color(t.bg(14))),
                 snap: true,
                 ..Default::default()
             },
