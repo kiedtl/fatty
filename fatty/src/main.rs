@@ -24,6 +24,7 @@ use iced::widget::{container, Row, table::{self, Table}, Column, row, text::{Ric
 use iced::advanced::text::Ellipsis;
 
 mod colors;
+mod bolger;
 mod parser;
 mod styles;
 mod term;
@@ -78,6 +79,8 @@ pub struct Execution {
     string: String,
     vm: vm::VM,
     term: term::Term,
+    output: String,
+    document: Option<bolger::ui::Document>,
     exit_reason: Option<ExitReason>,
 }
 
@@ -136,6 +139,14 @@ pub enum Message {
     JobResolved(usize, usize),
     Poll,
     Signal(Signal),
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        // Explicitely drop slave, so that master drops only after slave
+        let slave = std::mem::replace(&mut self.slave, unsafe { rustix::stdio::take_stdin() }); // hack
+        std::mem::drop(slave);
+    }
 }
 
 impl App {
@@ -210,6 +221,8 @@ impl App {
                                 status: None,
                                 done: false,
                             },
+                            output: "".to_owned(),
+                            document: None,
                             term: term::Term::new(width),
                             exit_reason: None,
                         });
@@ -267,7 +280,17 @@ impl App {
                 // todo
             },
             Message::Poll => {
-                self.poll_pty();
+                let read_anything = self.poll_pty();
+
+                if read_anything
+                && let Some(last) = self.execs.last_mut()
+                && let Ok(ast) = bolger::parser::parse(&last.output)
+                && let Ok(doc) = bolger::ui::consume_ast(&ast)
+                {
+                    last.document = Some(doc);
+                } else if read_anything && let Some(last) = self.execs.last_mut() {
+                    println!("{:#?}", bolger::parser::parse(&last.output));
+                }
             }
             Message::Signal(sig) => {
                 if let Some(current) = self.execs.last() && let Some(pid) = current.vm.waiting_on {
@@ -452,6 +475,28 @@ impl App {
                     )
                         .padding(1)
                         .width(Length::Fill),
+                    if let Some(doc) = &exec.document {
+                        let mut uis = Column::new()
+                            .spacing(0);
+                        let mut spans = Vec::new();
+
+                        for uielem in &doc.elements {
+                            if uielem.is_block() {
+                                uis = uis.push(
+                                    Rich::with_spans(std::mem::take(&mut spans))
+                                        .on_link_click(iced::never)
+                                );
+                                uis = uis.push(uielem.to_iced(Default::default(), &doc.ids));
+                            } else {
+                                spans.push(uielem.to_iced_span(Default::default(), &doc.ids));
+                            }
+                        }
+
+                        let e: Elem<'_> = uis.into();
+                        e
+                    } else {
+                        space().into()
+                    }
                 ],
             );
         }
@@ -531,14 +576,23 @@ impl App {
             .into()
     }
 
-    fn poll_pty(&mut self) {
+    fn poll_pty(&mut self) -> bool {
         if let Some(last) = self.execs.last_mut() {
             let mut buf = [0u8; 65535];
             match rustix::io::read(&self.master, &mut buf) {
-                Ok(n) => self.ansi.advance(&mut last.term, &buf[0..n]),
-                Err(rustix::io::Errno::AGAIN) => (),
-                e => _ = e.unwrap(),
+                Ok(n) => {
+                    last.output.push_str(&String::from_utf8_lossy(&buf[0..n]));
+                    self.ansi.advance(&mut last.term, &buf[0..n]);
+                    true
+                },
+                Err(rustix::io::Errno::AGAIN) => false,
+                e => {
+                    _ = e.unwrap();
+                    false
+                }
             }
+        } else {
+            false
         }
     }
 }
@@ -549,14 +603,14 @@ pub fn wait_on(pid: Pid) -> Subscription<ExitReason> {
 
         loop {
             let result = tokio::task::spawn_blocking(move || {
-                rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty())
+                rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG)
             })
             .await
             .expect("spawn_blocking panicked");
 
             match result {
                 Ok(Some((_, status))) => return Some((ExitReason::from(status), None)),
-                Ok(None) => unreachable!(),
+                Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
                 Err(_) => unreachable!(),
             }
         }
