@@ -124,7 +124,7 @@ impl Element {
             Element::Id(id) => ids.get(id).unwrap().to_iced_span(style, ids),
             _ => unreachable!(),
         };
-        v = v.line_height(1.1);
+        v = v.line_height(1.15);
         v
     }
 

@@ -1,6 +1,11 @@
 use std::str::Chars;
 use std::iter::Peekable;
 
+#[cfg(not(target_os = "macos"))]
+const IS_MACOS: bool = false;
+#[cfg(target_os = "macos")]
+const IS_MACOS: bool = true;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AttrValue {
     String(String),
@@ -34,17 +39,22 @@ impl<'a> Parser<'a> {
     pub fn parse_document(&mut self) -> Result<Vec<Node>, String> {
         let mut nodes = Vec::new();
         while let Some(&c) = self.input.peek() {
-            if c == '(' {
-                nodes.push(self.parse_element()?);
-            } else {
-                let text = self.read_free_text();
-                if !text.trim().is_empty() {
+            match c {
+                '(' => nodes.push(self.parse_element()?),
+                ')' => Err(format!("Unexpected ')'"))?,
+                '"' => nodes.push(Node::Text(self.read_string()?)),
+
+                '\n' | '\r' | '\t' | ' ' => _ = self.next_char(),
+
+                c if c == '-' || c.is_ascii_digit() => {
+                    let text = self.read_free_text();
                     if let Ok(f) = text.parse::<f64>() {
                         nodes.push(Node::Number(f));
                     } else {
-                        nodes.push(Node::Text(text));
+                        Err(format!("Invalid number {text}"))?;
                     }
-                }
+                },
+                c => Err(format!("Unexpected character '{c}'"))?,
             }
         }
         Ok(nodes)
@@ -122,7 +132,7 @@ impl<'a> Parser<'a> {
     fn read_free_text(&mut self) -> String {
         let mut s = String::new();
         while let Some(&c) = self.input.peek() {
-            if c == '(' {
+            if c == '(' || c == '"' || c == ')' {
                 break;
             }
             s.push(c);
@@ -165,6 +175,11 @@ impl<'a> Parser<'a> {
                     };
                     s.push(escaped);
                 }
+
+                // Skip irrelevant newline characters
+                '\r' if !IS_MACOS => _ = self.next_char(),
+                '\n' if IS_MACOS => _ = self.next_char(),
+
                 _ => s.push(c),
             }
         }
