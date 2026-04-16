@@ -107,6 +107,10 @@ pub enum Element {
         max: f64,
     },
     Column(TableColumn),
+    Row {
+        for_table: Option<Id>,
+        values: Vec<Option<Element>>
+    },
     Id(Id),
 }
 
@@ -206,20 +210,30 @@ impl Element {
     }
 }
 
+#[derive(Debug)]
 pub struct Document {
     pub elements: Vec<Element>,
     pub ids: HashMap<Id, Element>,
 }
 
-pub fn consume_ast(ast: &[Node]) -> Result<Document, String> {
-    let mut ids = HashMap::new();
-    let mut elements = Vec::new();
-    for node in ast {
-        if let Some(c) = consume(node, &mut ids)? {
-            elements.push(c);
+impl Document {
+    pub fn new() -> Document {
+        Document {
+            ids: HashMap::new(),
+            elements: Vec::new(),
         }
     }
-    Ok(Document { elements, ids })
+
+    pub fn consume_nodes(&mut self, ast: &[Node]) -> Result<(), String> {
+        let mut elements = Vec::new();
+        for node in ast {
+            if let Some(c) = consume(node, &mut self.ids)? {
+                elements.push(c);
+            }
+        }
+        self.elements.extend(elements);
+        Ok(())
+    }
 }
 
 pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Element>, String> {
@@ -248,14 +262,12 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Ele
     match node {
         Node::Sexp { attrs, .. } => {
             for (attr, value) in attrs {
-                match attr.as_str() {
-                    "id" => match value {
-                        AttrValue::String(s) => {
-                            id = Some(s.clone());
-                            break;
-                        }
-                        _ => Err(format!("Id must be a string"))?,
-                    },
+                match (attr.as_str(), value) {
+                    ("id", AttrValue::String(s)) => {
+                        id = Some(s.clone());
+                        break;
+                    }
+                    ("id", _) => Err(format!("Id must be a string"))?,
                     _ => (),
                 }
             }
@@ -329,23 +341,10 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Ele
             }
 
             for child in children {
-                let mut values = Vec::new();
-                match child {
-                    Node::Sexp { tag, attrs, children } if tag == "row"=> {
-                        for (attr, _value) in attrs {
-                            match attr.as_str() {
-                                s => Err(format!("Unknown row attribute {s}"))?,
-                            }
-                        }
-
-                        for child in children {
-                            if let Some(c) = consume(child, ids)? {
-                                values.push(Some(c));
-                            }
-                        }
-                    },
+                let values = match consume(child, ids)? {
+                    Some(Element::Row { values, .. }) => values,
                     _ => Err(format!("Expected row"))?,
-                }
+                };
                 rows.push(values);
             }
 
@@ -370,19 +369,53 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Ele
 
             Element::Column(TableColumn { name })
         }
-        Node::Sexp { tag, .. } if tag == "row" => Err(format!("Row element can only appear within a table."))?,
+        Node::Sexp { tag, attrs, children } if tag == "row" => {
+            let mut for_table = None;
+            for (attr, value) in attrs {
+                match (attr.as_str(), value) {
+                    ("for", AttrValue::String(s)) => for_table = Some(s.clone()),
+                    ("for", _) => Err(format!("`:for` requires a string"))?,
+                    (s, _) => Err(format!("Unknown row attribute {s}"))?,
+                }
+            }
+
+            let mut values = Vec::new();
+            for child in children {
+                if let Some(c) = consume(child, ids)? {
+                    values.push(Some(c));
+                }
+            }
+
+            Element::Row { values, for_table }
+        },
         Node::Sexp { tag, .. } => Err(format!("Unknown element {tag}."))?,
     };
 
-    if let Some(id) = id {
+    let elem = if let Some(id) = id {
         let contained = ids.contains_key(&id);
         ids.insert(id.clone(), elem);
         if contained {
-            Ok(None)
+            None
         } else {
-            Ok(Some(Element::Id(id)))
+            Some(Element::Id(id))
         }
     } else {
-        Ok(Some(elem))
+        Some(elem)
+    };
+
+    if let Some(elem) = elem {
+        match elem {
+            Element::Row { for_table: Some(table), values } => {
+                if let Some(Element::Table { rows, .. }) = ids.get_mut(&table) {
+                    rows.push(values);
+                    return Ok(None);
+                } else {
+                    return Err(format!("Table with id {table} doesn't exit."));
+                }
+            },
+            e => Ok(Some(e))
+        }
+    } else {
+        Ok(None)
     }
 }

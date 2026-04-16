@@ -80,8 +80,27 @@ pub struct Execution {
     vm: vm::VM,
     term: term::Term,
     output: String,
-    document: Option<bolger::ui::Document>,
+    document: bolger::ui::Document,
     exit_reason: Option<ExitReason>,
+
+    b_err: bool, // Is the output corrupted permanently
+    p_stack: usize,
+    q_flag: bool,
+}
+
+impl Execution {
+    pub fn new(string: String, vm: vm::VM, width: usize) -> Execution {
+        Execution {
+            string, vm,
+            term: term::Term::new(width),
+            output: "".to_owned(),
+            document: bolger::ui::Document::new(),
+            exit_reason: None,
+            b_err: false,
+            p_stack: 0,
+            q_flag: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -210,9 +229,9 @@ impl App {
                             .unwrap_or(70);
 
                         let string = std::mem::take(&mut self.input);
-                        self.execs.push(Execution {
+                        self.execs.push(Execution::new(
                             string,
-                            vm: vm::VM {
+                            vm::VM {
                                 program: Arc::new(program),
                                 pc: (0, None),
                                 waiting_on: None,
@@ -221,11 +240,8 @@ impl App {
                                 status: None,
                                 done: false,
                             },
-                            output: "".to_owned(),
-                            document: None,
-                            term: term::Term::new(width),
-                            exit_reason: None,
-                        });
+                            width,
+                        ));
 
                         return self.update(Message::ContinueProgram);
                     },
@@ -284,12 +300,16 @@ impl App {
 
                 if read_anything
                 && let Some(last) = self.execs.last_mut()
+                && !last.b_err && last.p_stack == 0 && !last.q_flag
                 && let Ok(ast) = bolger::parser::parse(&last.output)
-                && let Ok(doc) = bolger::ui::consume_ast(&ast)
                 {
-                    last.document = Some(doc);
-                } else if read_anything && let Some(last) = self.execs.last_mut() {
-                    println!("{:#?}", bolger::parser::parse(&last.output));
+                    last.document.consume_nodes(&ast).unwrap();
+                } else if read_anything {
+                    if let Some(last) = self.execs.last_mut()
+                    && !last.b_err && last.p_stack == 0 && !last.q_flag
+                    {
+                        println!("{:?}", bolger::parser::parse(&last.output));
+                    }
                 }
             }
             Message::Signal(sig) => {
@@ -475,28 +495,30 @@ impl App {
                     )
                         .padding(1)
                         .width(Length::Fill),
-                    if let Some(doc) = &exec.document {
-                        let mut uis = Column::new()
-                            .spacing(0);
-                        let mut spans = Vec::new();
+                    scrollable(
+                        if !exec.document.elements.is_empty() {
+                            let mut uis = Column::new()
+                                .spacing(0);
+                            let mut spans = Vec::new();
 
-                        for uielem in &doc.elements {
-                            if uielem.is_block() {
-                                uis = uis.push(
-                                    Rich::with_spans(std::mem::take(&mut spans))
-                                        .on_link_click(iced::never)
-                                );
-                                uis = uis.push(uielem.to_iced(Default::default(), &doc.ids));
-                            } else {
-                                spans.push(uielem.to_iced_span(Default::default(), &doc.ids));
+                            for uielem in &exec.document.elements {
+                                if uielem.is_block() {
+                                    uis = uis.push(
+                                        Rich::with_spans(std::mem::take(&mut spans))
+                                            .on_link_click(iced::never)
+                                    );
+                                    uis = uis.push(uielem.to_iced(Default::default(), &exec.document.ids));
+                                } else {
+                                    spans.push(uielem.to_iced_span(Default::default(), &exec.document.ids));
+                                }
                             }
-                        }
 
-                        let e: Elem<'_> = uis.into();
-                        e
-                    } else {
-                        space().into()
-                    }
+                            let e: Elem<'_> = uis.into();
+                            e
+                        } else {
+                            space().into()
+                        }
+                    ),
                 ],
             );
         }
@@ -581,6 +603,17 @@ impl App {
             let mut buf = [0u8; 65535];
             match rustix::io::read(&self.master, &mut buf) {
                 Ok(n) => {
+                    if !last.b_err {
+                        for ind in memchr::memchr3_iter(b'(', b')', b'"', &buf[0..n]) {
+                            match buf[ind] {
+                                b'(' => last.p_stack += 1,
+                                b')' if last.p_stack == 0 => last.b_err = true,
+                                b')' => last.p_stack -= 1,
+                                b'"' => last.q_flag = !last.q_flag,
+                                _ => unreachable!(),
+                            }
+                        }
+                    }
                     last.output.push_str(&String::from_utf8_lossy(&buf[0..n]));
                     self.ansi.advance(&mut last.term, &buf[0..n]);
                     true

@@ -2,7 +2,7 @@ use anyhow::{bail, Result, Context};
 
 use std::fs;
 use std::ffi::OsStr;
-use std::io::{self, BufReader, BufWriter};
+use std::io::{self, Read, BufReader, BufWriter};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt, FileTypeExt};
 use std::os::linux::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -41,8 +41,8 @@ struct Cli {
     preserve: bool,
     #[arg(short = 'r', long = "recursive",   help = "Copy recursively.")]
     recursive: bool,
-    #[arg(short = 'v', long = "verbose",     help = "Print verbose logs.")]
-    verbose: bool,
+    // #[arg(short = 'v', long = "verbose",     help = "Print verbose logs.")]
+    // verbose: bool,
     #[arg(short = 'H',                       help = "Follow SOURCE if it's a symbolic link.")]
     follow_h: bool,
     #[arg(short = 'L',                       help = "Always follow symbolic links in SOURCE.")]
@@ -58,7 +58,7 @@ struct CopyOpts {
     interactive: bool,
     preserve: bool,
     recursive: bool,
-    verbose: bool,
+    //verbose: bool,
     follow: Follow,
 }
 
@@ -71,6 +71,7 @@ enum Follow {
 
 fn main() {
     let args = Cli::parse();
+    let mut b = Bolger::new();
 
     let recursive = args.recursive || args.archive;
     let follow =
@@ -90,17 +91,22 @@ fn main() {
         interactive: args.interactive,
         preserve: args.preserve || args.archive,
         recursive,
-        verbose: args.verbose,
+        // verbose: args.verbose,
         follow,
     };
 
+    b.begin("table");
+    b.attr_str("id", "t");
+    print!(" :columns [ (column \"src\") (column \"dest\") (column \"status\") ]");
+    b.end("table");
+
     let mut is_success = true;
     if args.source.len() == 1 && !args.dest.is_dir() {
-        is_success = apply(&args.source[0], &args.dest, cp, 0, opts) && is_success;
+        is_success = apply(&mut b, &args.source[0], &args.dest, cp, 0, opts) && is_success;
     } else {
         for source in &args.source {
             let dest = args.dest.join(source.file_name().unwrap_or(OsStr::new("")));
-            is_success = apply(source, &dest, cp, 0, opts) && is_success;
+            is_success = apply(&mut b, source, &dest, cp, 0, opts) && is_success;
         }
     }
 
@@ -110,24 +116,36 @@ fn main() {
 }
 
 // Returns true if successful, false otherwise.
-fn apply<O>(a: &Path, b: &Path, func: fn(&Path, &Path, usize, O) -> Result<()>, depth: usize, opts: O) -> bool {
+fn apply<O>(bolger: &mut Bolger, a: &Path, b: &Path, func: fn(&mut Bolger, &Path, &Path, usize, O) -> Result<()>, depth: usize, opts: O) -> bool {
     if let Ok(a_met) = fs::metadata(a) && let Ok(b_met) = fs::metadata(b)
         && a_met.dev() == b_met.dev()
         && a_met.ino() == b_met.ino()
     {
-        eprintln!("{} -> {}: same file", a.display(), b.display());
+        //eprintln!("{} -> {}: same file", a.display(), b.display());
+        bolger.str("same file");
         return true;
     }
 
-    if let Err(e) = (func)(a, b, depth, opts) {
-        eprintln!("{} -> {}: {e}", a.display(), b.display());
+    let result = (func)(bolger, a, b, depth, opts);
+
+    bolger.begin("row");
+    bolger.attr_str("for", "t");
+    bolger.str(a.display());
+    bolger.str(b.display());
+
+    if let Err(e) = result {
+        //eprintln!("{} -> {}: {e}", a.display(), b.display());
+        bolger.str(e);
+        bolger.end("row");
         false
     } else {
+        bolger.str("ok");
+        bolger.end("row");
         true
     }
 }
 
-fn cp(s1: &Path, s2: &Path, depth: usize, opts: CopyOpts) -> Result<()> {
+fn cp(b: &mut Bolger, s1: &Path, s2: &Path, depth: usize, opts: CopyOpts) -> Result<()> {
     let mut cperr = None;
 
     let met = match opts.follow {
@@ -143,9 +161,9 @@ fn cp(s1: &Path, s2: &Path, depth: usize, opts: CopyOpts) -> Result<()> {
         return Ok(());
     }
 
-    if opts.verbose {
-        println!("{} -> {}", s1.display(), s2.display());
-    }
+    // if opts.verbose {
+    //     println!("{} -> {}", s1.display(), s2.display());
+    // }
 
     if ft.is_symlink() {
         let target = fs::read_link(s1)
@@ -179,7 +197,7 @@ fn cp(s1: &Path, s2: &Path, depth: usize, opts: CopyOpts) -> Result<()> {
             let name = entry?.file_name();
             let ns1 = s1.join(&name);
             let ns2 = s2.join(&name);
-            let _ = apply(&ns1, &ns2, cp, depth + 1, opts);
+            let _ = apply(b, &ns1, &ns2, cp, depth + 1, opts);
         }
     } else if opts.archive && (ft.is_block_device() || ft.is_char_device() || ft.is_socket() || ft.is_fifo()) {
         if opts.force {
@@ -206,7 +224,7 @@ fn cp(s1: &Path, s2: &Path, depth: usize, opts: CopyOpts) -> Result<()> {
             .with_context(|| format!("open {}", s2.display()))?;
         let _ = f2.set_permissions(perms);
 
-        let mut reader = BufReader::new(f1);
+        let mut reader = ProgressReader::new(BufReader::new(f1), met.size(), b);
         let mut writer = BufWriter::new(f2);
         io::copy(&mut reader, &mut writer)?;
     }
@@ -250,4 +268,77 @@ fn read_confirm() -> bool {
     let mut line = String::new();
     io::stdin().read_line(&mut line).unwrap_or(0);
     matches!(line.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
+}
+
+struct ProgressReader<'a, R> {
+    inner: R,
+    cur: usize,
+    total: u64,
+    b: &'a mut Bolger,
+}
+
+impl<'a, R: Read> ProgressReader<'a, R> {
+    fn new(inner: R, total: u64, b: &'a mut Bolger) -> Self {
+        Self { inner, cur: 0, total, b }
+    }
+}
+
+impl<'a, R: Read> Read for ProgressReader<'a, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.cur += n;
+
+        self.b.begin("progress");
+        self.b.attr_str("id", "p");
+        self.b.attr_num("done", self.cur as f64);
+        self.b.attr_num("max", self.total as f64);
+        self.b.end("progress");
+
+        Ok(n)
+    }
+}
+
+use std::fmt::Display;
+
+struct Bolger {
+    stack: Vec<&'static str>,
+}
+
+impl Bolger {
+    fn new() -> Bolger {
+        Bolger {
+            stack: Vec::new(),
+        }
+    }
+
+    fn begin(&mut self, s: &'static str) {
+        self.stack.push(s);
+        print!("({s} ");
+    }
+
+    fn end(&mut self, s: &str) {
+        let f = self.stack.pop();
+        if f != Some(s) {
+            panic!("Tried to end {s} section, but was in {f:?} section instead.");
+        }
+        print!(")");
+    }
+
+    fn attr_str<A: Display, V: Display>(&mut self, a: A, v: V) {
+        assert!(!self.stack.is_empty());
+        print!(" :{a} \"{v}\"");
+    }
+
+    fn attr_num<A: Display, V: Into<f64>>(&mut self, a: A, v: V) {
+        assert!(!self.stack.is_empty());
+        print!(" :{a} {}", v.into());
+    }
+
+    fn str<S: Display>(&mut self, s: S) {
+        print!(" \"{s}\" ");
+    }
+
+    fn num<V: Into<f64>>(&mut self, v: V) {
+        print!(" {}", v.into());
+    }
 }
