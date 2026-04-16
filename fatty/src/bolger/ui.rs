@@ -5,7 +5,7 @@ use iced::widget::text::{Span, Rich};
 use iced::widget::span;
 
 use crate::bolger::parser::*;
-use crate::styles::Theme;
+use crate::styles::{CS, Theme};
 
 pub type Id = String;
 
@@ -73,10 +73,11 @@ impl Style {
 
     fn size(&self) -> f32 {
         match self.size {
-            TextSize::Normal => 16.,
-            TextSize::H(1) => 24.,
+            TextSize::H(1) => 20.,
             TextSize::H(2) => 18.,
             TextSize::H(3) => 16.,
+            TextSize::Normal => 16.,
+
             //TextSize::H(4) => 24.,
             //TextSize::H(5) => 18.,
             //TextSize::H(6) => 16.,
@@ -100,6 +101,10 @@ pub enum Element {
     Table {
         columns: Vec<TableColumn>,
         rows: Vec<Vec<Option<Element>>>,
+    },
+    Progress {
+        done: f64,
+        max: f64,
     },
     Column(TableColumn),
     Id(Id),
@@ -129,7 +134,8 @@ impl Element {
     }
 
     pub fn to_iced<'a>(&'a self, style: Style, ids: &'a HashMap<Id, Element>) -> crate::Elem<'a> {
-        use iced::widget::{text, space, table::{self, Table}};
+        use iced::{Background, Border, Padding, Length, alignment};
+        use iced::widget::{container, row, text, space, responsive, table::{self, Table}};
         use crate::Elem;
 
         match self {
@@ -147,8 +153,50 @@ impl Element {
                     })
                 }).collect::<Vec<_>>();
 
-                Table::new(columns, rows)
-                    .padding_y(1)
+                container(
+                    Table::new(columns, rows)
+                        .padding_y(1)
+                )
+                    .width(Length::Fill)
+                    .align_x(alignment::Horizontal::Center)
+                    .into()
+            },
+            Element::Progress { done, max } => {
+                container(
+                    container(responsive(|size| {
+                        let p = (*done / (*max).max(1.)) as f32;
+                        row![
+                            container(
+                                space().height(18.).width(p * size.width)
+                            )
+                                .class(CS::Custom(|t: &Theme| container::Style {
+                                    background: Some(Background::Color(t.ac(10))),
+                                    border: Border { width: 0., ..Default::default() },
+                                    snap: true,
+                                    ..Default::default()
+                                })),
+                            space().height(18.).width((1. - p) * size.width),
+                        ].into()
+                    }))
+                        .padding(6.)
+                        .class(CS::Custom(|t: &Theme| container::Style {
+                            border: Border {
+                                color: t.bg(1),
+                                width: 2.,
+                                ..Default::default()
+                            },
+                            snap: true,
+                            ..Default::default()
+                        }))
+                )
+                    .padding(Padding {
+                        left: 10.,
+                        right: 10.,
+                        bottom: 3.,
+                        top: 3.,
+                    })
+                    .width(Length::Fill)
+                    .align_x(alignment::Horizontal::Center)
                     .into()
             },
             Element::Column(c) => text(format!("<column {c:?}>")).into(),
@@ -167,12 +215,14 @@ pub fn consume_ast(ast: &[Node]) -> Result<Document, String> {
     let mut ids = HashMap::new();
     let mut elements = Vec::new();
     for node in ast {
-        elements.push(consume(node, &mut ids)?);
+        if let Some(c) = consume(node, &mut ids)? {
+            elements.push(c);
+        }
     }
     Ok(Document { elements, ids })
 }
 
-pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Element, String> {
+pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Element>, String> {
     let process_style_elem = |
         attrs: &[(String, AttrValue)],
         children: &[Node],
@@ -186,7 +236,7 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Element, S
             Err(format!("`b` and `i` should only have one non-block child"))?;
         }
 
-        let inner = consume(&children[0], ids)?;
+        let inner = consume(&children[0], ids)?.unwrap();
         if inner.is_block() {
             Err(format!("`b` and `i` should only have one non-block child"))?;
         }
@@ -223,6 +273,33 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Element, S
         Node::Sexp { tag, attrs, children } if tag == "h2" => Element::Header(2, process_style_elem(attrs, children, ids)?),
         Node::Sexp { tag, attrs, children } if tag == "h3" => Element::Header(3, process_style_elem(attrs, children, ids)?),
 
+        Node::Sexp { tag, attrs, children } if tag == "progress" => {
+            let mut done = 0.;
+            let mut max = 1.;
+
+            if children.len() != 0 {
+                Err(format!("`progress` must have zero children"))?;
+            }
+
+            for (attr, value) in attrs {
+                match attr.as_str() {
+                    "id" => (),
+                    "done" =>
+                        match value {
+                            AttrValue::Number(a) => done = *a,
+                            _ => Err(format!("Progress.done must be a number"))?,
+                        },
+                    "max" =>
+                        match value {
+                            AttrValue::Number(a) => max = *a,
+                            _ => Err(format!("Progress.max must be a number"))?,
+                        },
+                    s => Err(format!("Unknown `progress` attribute {s}"))?,
+                }
+            }
+
+            Element::Progress { done, max }
+        }
         Node::Sexp { tag, attrs, children } if tag == "table" => {
             let mut columns: Vec<TableColumn> = Vec::new();
             let mut rows: Vec<Vec<Option<Element>>> = Vec::new();
@@ -236,7 +313,8 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Element, S
                                 match value {
                                     AttrValue::Node(n) => {
                                         match consume(n, ids)? {
-                                            Element::Column(c) => columns.push(c),
+                                            Some(Element::Column(c)) => columns.push(c),
+                                            None => (),
                                             _ => Err(format!("Expected list of columns"))?,
                                         }
                                     },
@@ -261,7 +339,9 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Element, S
                         }
 
                         for child in children {
-                            values.push(Some(consume(child, ids)?));
+                            if let Some(c) = consume(child, ids)? {
+                                values.push(Some(c));
+                            }
                         }
                     },
                     _ => Err(format!("Expected row"))?,
@@ -295,9 +375,14 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Element, S
     };
 
     if let Some(id) = id {
+        let contained = ids.contains_key(&id);
         ids.insert(id.clone(), elem);
-        Ok(Element::Id(id))
+        if contained {
+            Ok(None)
+        } else {
+            Ok(Some(Element::Id(id)))
+        }
     } else {
-        Ok(elem)
+        Ok(Some(elem))
     }
 }

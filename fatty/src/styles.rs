@@ -145,6 +145,14 @@ pub enum CS {
     Base,
     Box,
     WhiteBox,
+    Custom(fn(&Theme) -> container::Style),
+}
+
+type CSFunc = fn(&Theme) -> container::Style;
+impl From<CSFunc> for CS {
+    fn from(f: CSFunc) -> CS {
+        CS::Custom(f)
+    }
 }
 
 impl CS {
@@ -191,6 +199,7 @@ impl CS {
                 shadow: Default::default(),
                 snap: true,
             },
+            CS::Custom(func) => (func)(t),
         }
     }
 }
