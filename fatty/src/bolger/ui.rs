@@ -171,7 +171,7 @@ impl Element {
                         let p = (*done / (*max).max(1.)) as f32;
                         row![
                             container(
-                                space().height(18.).width(p * size.width)
+                                space().height(16.).width(p * size.width)
                             )
                                 .class(CS::Custom(|t: &Theme| container::Style {
                                     background: Some(Background::Color(t.ac(10))),
@@ -182,11 +182,14 @@ impl Element {
                             space().height(18.).width((1. - p) * size.width),
                         ].into()
                     }))
-                        .padding(6.)
+                        .padding(Padding {
+                            left: 0.,
+                            right: 4., bottom: 4., top: 4.,
+                        })
                         .class(CS::Custom(|t: &Theme| container::Style {
                             border: Border {
                                 color: t.bg(1),
-                                width: 2.,
+                                width: 1.,
                                 ..Default::default()
                             },
                             snap: true,
@@ -194,10 +197,8 @@ impl Element {
                         }))
                 )
                     .padding(Padding {
-                        left: 10.,
-                        right: 10.,
-                        bottom: 3.,
-                        top: 3.,
+                        left: 10., right: 10.,
+                        bottom: 3., top: 3.,
                     })
                     .width(Length::Fill)
                     .align_x(alignment::Horizontal::Center)

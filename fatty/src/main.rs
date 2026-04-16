@@ -295,23 +295,7 @@ impl App {
             Message::JobResolved(_exec_ind, _job_ind) => {
                 // todo
             },
-            Message::Poll => {
-                let read_anything = self.poll_pty();
-
-                if read_anything
-                && let Some(last) = self.execs.last_mut()
-                && !last.b_err && last.p_stack == 0 && !last.q_flag
-                && let Ok(ast) = bolger::parser::parse(&last.output)
-                {
-                    last.document.consume_nodes(&ast).unwrap();
-                } else if read_anything {
-                    if let Some(last) = self.execs.last_mut()
-                    && !last.b_err && last.p_stack == 0 && !last.q_flag
-                    {
-                        println!("{:?}", bolger::parser::parse(&last.output));
-                    }
-                }
-            }
+            Message::Poll => self.poll_pty(),
             Message::Signal(sig) => {
                 if let Some(current) = self.execs.last() && let Some(pid) = current.vm.waiting_on {
                     kill_process(pid, sig).unwrap();
@@ -473,28 +457,34 @@ impl App {
                     )
                         .class(CS::Box)
                         .padding(3),
-                    container(
-                        Column::with_children(
-                            exec.term.cells.iter()
-                                .map(|line|
-                                    Rich::<'_, (), Message, styles::Theme>::with_spans(
-                                        line.iter()
-                                            .map(|c| {
-                                                let ch = if c.ch == '\t' { ' ' } else { c.ch };
-                                                Span::new(ch)
-                                                    .color(exec.term.resolve(&self.theme, c.fg))
-                                                    .background(iced::Background::Color(exec.term.resolve(&self.theme, c.bg)))
-                                                    .font(c.iced_font())
-                                                    .size(FONT_SIZE)
-                                            })
-                                            .collect::<Vec<_>>()
+                    if !exec.document.elements.is_empty() {
+                        let e: Elem<'_> = space().into();
+                        e
+                    } else {
+                        container(
+                            Column::with_children(
+                                exec.term.cells.iter()
+                                    .map(|line|
+                                        Rich::<'_, (), Message, styles::Theme>::with_spans(
+                                            line.iter()
+                                                .map(|c| {
+                                                    let ch = if c.ch == '\t' { ' ' } else { c.ch };
+                                                    Span::new(ch)
+                                                        .color(exec.term.resolve(&self.theme, c.fg))
+                                                        .background(iced::Background::Color(exec.term.resolve(&self.theme, c.bg)))
+                                                        .font(c.iced_font())
+                                                        .size(FONT_SIZE)
+                                                })
+                                                .collect::<Vec<_>>()
+                                        )
+                                            .into()
                                     )
-                                        .into()
-                                )
+                            )
                         )
-                    )
-                        .padding(1)
-                        .width(Length::Fill),
+                            .padding(1)
+                            .width(Length::Fill)
+                            .into()
+                    },
                     scrollable(
                         if !exec.document.elements.is_empty() {
                             let mut uis = Column::new()
@@ -519,6 +509,16 @@ impl App {
                             space().into()
                         }
                     ),
+                    text({
+                        let mut s = format!("p_stack: {}; ", exec.p_stack);
+                        if exec.q_flag {
+                            s = format!("{s}waiting for quote; ");
+                        }
+                        if exec.b_err {
+                            s = format!("{s}corrupted output");
+                        }
+                        s
+                    }),
                 ],
             );
         }
@@ -598,34 +598,47 @@ impl App {
             .into()
     }
 
-    fn poll_pty(&mut self) -> bool {
+    fn poll_pty(&mut self) {
         if let Some(last) = self.execs.last_mut() {
-            let mut buf = [0u8; 65535];
-            match rustix::io::read(&self.master, &mut buf) {
-                Ok(n) => {
-                    if !last.b_err {
-                        for ind in memchr::memchr3_iter(b'(', b')', b'"', &buf[0..n]) {
-                            match buf[ind] {
-                                b'(' => last.p_stack += 1,
-                                b')' if last.p_stack == 0 => last.b_err = true,
-                                b')' => last.p_stack -= 1,
-                                b'"' => last.q_flag = !last.q_flag,
-                                _ => unreachable!(),
+            let mut buf = [0u8; 4096];
+            loop {
+                match rustix::io::read(&self.master, &mut buf) {
+                    Ok(n) => {
+                        self.ansi.advance(&mut last.term, &buf[0..n]);
+
+                        let mut buf_last = 0;
+
+                        if !last.b_err {
+                            for ind in memchr::memchr3_iter(b'(', b')', b'"', &buf[0..n]) {
+                                match buf[ind] {
+                                    b'(' => last.p_stack += 1,
+                                    b')' if last.p_stack == 0 => last.b_err = true,
+                                    b')' => last.p_stack -= 1,
+                                    b'"' => last.q_flag = !last.q_flag,
+                                    _ => unreachable!(),
+                                }
+
+                                if last.p_stack == 0 && !last.q_flag {
+                                    last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..ind + 1]));
+                                    buf_last = ind + 1;
+
+                                    match bolger::parser::parse(&last.output) {
+                                        Ok(ast) => {
+                                            last.output.clear();
+                                            last.document.consume_nodes(&ast).unwrap();
+                                        },
+                                        Err(e) => println!("{e:?}"),
+                                    }
+                                }
                             }
                         }
-                    }
-                    last.output.push_str(&String::from_utf8_lossy(&buf[0..n]));
-                    self.ansi.advance(&mut last.term, &buf[0..n]);
-                    true
-                },
-                Err(rustix::io::Errno::AGAIN) => false,
-                e => {
-                    _ = e.unwrap();
-                    false
+
+                        last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..n]));
+                    },
+                    Err(rustix::io::Errno::AGAIN) => return,
+                    e => _ = e.unwrap(),
                 }
             }
-        } else {
-            false
         }
     }
 }
