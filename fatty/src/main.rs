@@ -31,6 +31,7 @@ mod styles;
 mod term;
 mod utils;
 mod vm;
+mod widgets;
 
 use helpers::*;
 use styles::CS;
@@ -223,15 +224,26 @@ impl App {
                         let program = vm::compile(&parsed);
                         //vm::print_program(&program);
 
-                        let font_width = utils::measure_text(
+                        let (font_width, font_height) = utils::measure_text(
                             "m", f32::INFINITY, FONT_SIZE, 1., term::Cell::default().iced_font()
-                        ).0
-                            // Sometimes there's an extra column that causes ugly wrapping
-                            * 1.01;
+                        );
+
+                        // Sometimes there's an extra column that causes ugly wrapping
+                        let font_width = font_width * 1.01;
 
                         let width = self.vwidth.get()
-                            .map(|width| (width / font_width).floor() as usize)
+                            .map(|width| (width / font_width).floor() as u16)
                             .unwrap_or(70);
+
+                        rustix::termios::tcsetwinsize(
+                            &self.master,
+                            rustix::termios::Winsize {
+                                ws_row: 100,
+                                ws_col: width,
+                                ws_xpixel: font_width as u16,
+                                ws_ypixel: font_height as u16,
+                            }
+                        ).unwrap();
 
                         let string = std::mem::take(&mut self.input);
                         self.execs.push(Execution::new(
@@ -245,7 +257,7 @@ impl App {
                                 status: None,
                                 done: false,
                             },
-                            width,
+                            width as usize,
                         ));
 
                         return self.update(Message::ContinueProgram);
@@ -466,23 +478,11 @@ impl App {
                         e
                     } else {
                         container(
-                            Column::with_children(
-                                exec.term.cells.iter()
-                                    .map(|line|
-                                        Rich::<'_, (), Message, styles::Theme>::with_spans(
-                                            line.iter()
-                                                .map(|c| {
-                                                    let ch = if c.ch == '\t' { ' ' } else { c.ch };
-                                                    Span::new(ch)
-                                                        .color(exec.term.resolve(&self.theme, c.fg))
-                                                        .background(iced::Background::Color(exec.term.resolve(&self.theme, c.bg)))
-                                                        .font(c.iced_font())
-                                                        .size(FONT_SIZE)
-                                                })
-                                                .collect::<Vec<_>>()
-                                        )
-                                            .into()
-                                    )
+                            widgets::tty::Tty::new(
+                                &exec.term,
+                                &self.theme,
+                                FONT_SIZE,
+                                |term, theme, color| term.resolve(theme, color),
                             )
                         )
                             .padding(1)
