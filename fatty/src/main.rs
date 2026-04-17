@@ -20,7 +20,7 @@ use iced::futures::stream;
 use iced::window;
 use iced::{Event, Element, Task, Subscription, Length};
 use iced::keyboard::{self, key, Modifiers};
-use iced::widget::{container, Row, table::{self, Table}, Column, row, text::{Rich, Span}, column, text, text_input, scrollable, responsive, space};
+use iced::widget::{container, Row, table::{self, Table}, Column, row, text::{Rich, Span}, column, text, text_input, responsive, space};
 use iced::advanced::text::Ellipsis;
 
 mod bolger;
@@ -36,6 +36,7 @@ mod widgets;
 use helpers::*;
 use styles::CS;
 use vm::VMStatus;
+use widgets::scrollable::scrollable;
 
 const FONT_SIZE: f32 = 15.0;
 
@@ -540,15 +541,6 @@ impl App {
         container(
             row![
                 column![
-                    scrollable(
-                        container(execs)
-                            .padding(iced::Padding {
-                                right: 15.,
-                                ..Default::default()
-                            })
-                    )
-                        .anchor_bottom()
-                        .height(Length::Fill),
                     responsive(move |size| {
                         self.vwidth.set(Some(size.width));
                         space()
@@ -557,7 +549,19 @@ impl App {
                     })
                         .height(Length::Shrink)
                         .width(Length::Fill),
-                    input,
+                    column![
+                        scrollable(
+                            container(execs)
+                                .padding(iced::Padding {
+                                    right: 15.,
+                                    ..Default::default()
+                                })
+                        )
+                            .anchor_bottom()
+                            .height(Length::Fill),
+                        input,
+                    ]
+                        .spacing(4.)
                 ]
                     .width(Length::FillPortion(2)),
                 column![
@@ -570,7 +574,6 @@ impl App {
                                 left: 5.,
                             })
                             .width(Length::Fill)
-                            .height(Length::Fill)
                             .class(CS::WhiteBox)
                     )
                         .height(Length::FillPortion(2))
@@ -584,13 +587,13 @@ impl App {
                                 left: 5.,
                             })
                             .width(Length::Fill)
-                            .height(Length::Fill)
                             .class(CS::WhiteBox)
                     )
                         .height(Length::FillPortion(1))
                         .width(Length::Fill)
                         .anchor_bottom()
                 ]
+                    .spacing(4)
                     .width(Length::FillPortion(1)),
             ]
                 .spacing(4)

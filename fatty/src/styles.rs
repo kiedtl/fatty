@@ -1,8 +1,12 @@
-use iced::{Gradient, Background, Border, Color};
-use iced::widget::{container, button, scrollable, text_input, table};
+use iced::{Gradient, Background, Border, border::Radius, Color};
+use iced::widget::{container, button, text_input, table};
 
 use vte::ansi::Rgb;
 use crate::colors::Hsv;
+use crate::widgets::scrollable;
+
+const RAD_PX: f32 = 2.;
+pub const RAD: Radius = Radius { top_left: RAD_PX, top_right: RAD_PX, bottom_right: RAD_PX, bottom_left: RAD_PX };
 
 #[derive(Copy, Clone)]
 pub struct Theme {
@@ -46,11 +50,11 @@ impl Theme {
             fg: Color::from_rgb8(0x28, 0x28, 0x28),
             white: Color::from_rgb8(0xfb, 0xfb, 0xe7),
 
-            bg_hue: 33,
-            bg_sat: 0.07, //0.14, //0.153,
+            bg_hue: 120, //33,
+            bg_sat: 0.03, //0.14, //0.153,
 
-            ac_hue: 19,
-            ac_sat: 0.61, //0.61,
+            ac_hue: 130, //19,
+            ac_sat: 0.51, //0.61,
         }
     }
 
@@ -185,7 +189,7 @@ impl CS {
                 )),
                 border: Border {
                     width: 1.,
-                    radius: (4.).into(),
+                    radius: RAD,
                     color: t.bg(6),
                 },
                 shadow: Default::default(),
@@ -196,7 +200,7 @@ impl CS {
                 background: Some(Background::Color(t.white)),
                 border: Border {
                     width: 1.,
-                    radius: (4.).into(),
+                    radius: RAD,
                     color: t.bg(4),
                 },
                 shadow: Default::default(),
@@ -268,42 +272,31 @@ pub enum TableStyle {
 }
 
 pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
+    let rail = scrollable::Rail {
+        background: Some(Background::Color(t.bg(15))),
+        border: Border {
+            radius: RAD,
+            ..Default::default()
+        },
+        scroller: scrollable::Scroller {
+            //background: background::color(t.ac(7)),
+            color: t.ac(7),
+            border: Border {
+                color: t.bg(2),
+                width: 1.,
+                radius: RAD,
+                ..Default::default()
+            },
+        },
+    };
+
     match s {
         scrollable::Status::Active { .. } => {
             scrollable::Style {
                 container: container::Style::default(),
-                vertical_rail: scrollable::Rail {
-                    background: Some(Background::Color(t.bg(15))),
-                    border: Border {
-                        radius: (4.).into(),
-                        ..Default::default()
-                    },
-                    scroller: iced::widget::scrollable::Scroller {
-                        background: Background::Color(t.ac(7)),
-                        border: Default::default(),
-                    },
-                },
-                horizontal_rail: iced::widget::scrollable::Rail {
-                    background: Some(Background::Color(t.bg(15))),
-                    border: Border {
-                        radius: (4.).into(),
-                        ..Default::default()
-                    },
-                    scroller: iced::widget::scrollable::Scroller {
-                        background: Background::Color(t.ac(7)),
-                        border: Default::default(),
-                    },
-                },
-                gap: None,
-                auto_scroll: scrollable::AutoScroll {
-                    background: Background::Color(t.bg(15)),
-                    border: Border {
-                        radius: (4.).into(),
-                        ..Default::default()
-                    },
-                    shadow: Default::default(),
-                    icon: t.fg,
-                },
+                vertical_rail: rail,
+                horizontal_rail: rail,
+                gap: Default::default(),
             }
         },
         scrollable::Status::Hovered {
@@ -311,22 +304,25 @@ pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
             is_vertical_scrollbar_hovered: isv,
             ..
         } => {
-            let u = scrollable_style(t, iced::widget::scrollable::Status::Active {
-                is_horizontal_scrollbar_disabled: false,
-                is_vertical_scrollbar_disabled: false,
-            });
-            let h = iced::widget::scrollable::Rail {
-                scroller: iced::widget::scrollable::Scroller {
-                    background: Background::Color(t.ac(10)),
-                    border: Default::default(),
-                    ..u.vertical_rail.scroller
+            let h = scrollable::Rail {
+                scroller: scrollable::Scroller {
+                    //background: background::Color(t.ac(10)),
+                    color: t.ac(9),
+                    border: Border {
+                        color: t.bg(2),
+                        width: 1.,
+                        radius: RAD,
+                        ..Default::default()
+                    },
+                    ..rail.scroller
                 },
-                ..u.vertical_rail
+                ..rail
             };
-            iced::widget::scrollable::Style {
-                vertical_rail: if isv { h } else { u.vertical_rail },
-                horizontal_rail: if ish { h } else { u.horizontal_rail },
-                ..u
+            scrollable::Style {
+                vertical_rail: if isv { h } else { rail },
+                horizontal_rail: if ish { h } else { rail },
+                container: container::Style::default(),
+                gap: Default::default(),
             }
         },
         scrollable::Status::Dragged {
@@ -334,22 +330,25 @@ pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
             is_vertical_scrollbar_dragged: isv,
             ..
         } => {
-            let u = scrollable_style(t, scrollable::Status::Active {
-                is_horizontal_scrollbar_disabled: false,
-                is_vertical_scrollbar_disabled: false,
-            });
             let h = scrollable::Rail {
                 scroller: scrollable::Scroller {
-                    background: Background::Color(t.ac(10)),
-                    border: Default::default(),
-                    ..u.vertical_rail.scroller
+                    //background: background::Color(t.ac(10)),
+                    color: t.ac(10),
+                    border: Border {
+                        color: t.bg(2),
+                        width: 1.,
+                        radius: RAD,
+                        ..Default::default()
+                    },
+                    ..rail.scroller
                 },
-                ..u.vertical_rail
+                ..rail
             };
             scrollable::Style {
-                vertical_rail: if isv { h } else { u.vertical_rail },
-                horizontal_rail: if ish { h } else { u.horizontal_rail },
-                ..u
+                vertical_rail: if isv { h } else { rail },
+                horizontal_rail: if ish { h } else { rail },
+                container: container::Style::default(),
+                gap: Default::default(),
             }
         },
     }
@@ -359,7 +358,7 @@ pub fn input(t: &Theme, status: text_input::Status) -> text_input::Style {
     let active = text_input::Style {
         background: iced::Background::Color(t.white),
         border: Border {
-            radius: (4.).into(),
+            radius: RAD,
             width: 2.,
             color: t.bg(8),
         },

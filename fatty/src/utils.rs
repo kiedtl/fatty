@@ -1,12 +1,12 @@
 use std::fmt;
 use rustix::process::Signal;
 
-use iced::{alignment, Background};
+use iced::{alignment, Background, Border};
 use iced::widget::{Text, text, Row, row, column, container, responsive};
 use iced::advanced::text::IntoFragment;
 
 use crate::colors;
-use crate::styles::{CS, TextClass, Theme};
+use crate::styles::{self, CS, TextClass, Theme};
 use crate::Elem;
 use crate::helpers::*;
 
@@ -44,7 +44,7 @@ pub struct Mode(pub u32);
 //     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 impl Mode {
     pub fn to_iced<'a>(&self) -> Elem<'a> {
-        const NONE_CHAR: char = '·';
+        const NONE_CHAR: char = '⬥'; //'-'; //'·';
         const BASE: u32 = 0x777777;
         const R: u32 = 0xdd0000;
         const W: u32 = 0x227700;
@@ -66,7 +66,7 @@ impl Mode {
         fn txt<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
             mono(f)
                 .line_height(0.8)
-                .size(13.)
+                .size(11.)
                 .class(TextClass::Custom(|t: &Theme| t.white))
         }
 
@@ -77,21 +77,21 @@ impl Mode {
             (true,  true)  => 's',
             (true,  false) => 'S',
             (false, true)  => 'x',
-            (false, false) => '·',
+            (false, false) => NONE_CHAR,
         };
 
         let group_x = match (m & 0o2000 != 0, m & 0o0010 != 0) {
             (true,  true)  => 's',
             (true,  false) => 'S',
             (false, true)  => 'x',
-            (false, false) => '·',
+            (false, false) => NONE_CHAR,
         };
 
         let other_x = match (m & 0o1000 != 0, m & 0o0001 != 0) {
             (true,  true)  => 't',
             (true,  false) => 'T',
             (false, true)  => 'x',
-            (false, false) => '·',
+            (false, false) => NONE_CHAR,
         };
 
         //write!(f, "{}{}{}\n{}{}{}\n{}{}{}",
@@ -120,9 +120,13 @@ impl Mode {
                         r, row![w, x]
                     ].align_x(alignment::Horizontal::Center)
                 )
-                    .padding(1.)
+                    .padding(2.)
                     .class(CS::Custom2(container::Style {
                         background: Some(Background::Color(colors::iced_color(bg))),
+                        border: Border {
+                            radius: styles::RAD,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     }))
             );

@@ -28,4 +28,5 @@ pub fn mono<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
             family: font::Family::name("Drafting* Mono"),
             ..Default::default()
         })
+        .size(15.)
 }
