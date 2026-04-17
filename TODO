@@ -1,0 +1,56 @@
+Basic functions
+- cd
+- update listing with inotify
+- read from pty master properly
+- jobs writing to a pty properly
+- statusbar
+  - current directory
+  - git branch
+  - hostname? (why bother since you can only be local?)
+- input
+  - arrow keys to go back/forwards
+  - ctrl+l to "clear"
+- history
+  - time began, ended, taken
+  - directory
+- environment variables
+  - $env variables
+  - set for command
+
+Crickhollow (re)implementations
+- document output
+  x cp
+  - top, ps
+  - pastel
+  - cal
+  - qr (great for checking images...)
+  - cat
+    - markdown
+    - code (bat syntax highlighting?)
+    - images
+- object output
+  - ls
+  - du
+  - df
+  - wc
+  - lsblk
+  - sqlite repl
+  - fd (wrapper)
+  - rg (wrapper)
+
+Project: user input
+- regular terminal input
+- document input
+  - once done: fork doas
+    - https://github.com/multiplexd/doas/blob/master/doas.c
+
+Project: object output
+- Crickhollow: object manipulation (or built in?)
+  - Accessing fields
+  - Accessing nth item, range of items
+  - Mapping over range of items
+
+Project: convert bolger to binary format
+
+Nice to have
+- Listing: show git status

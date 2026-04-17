@@ -53,8 +53,8 @@ impl Theme {
             bg_hue: 120, //33,
             bg_sat: 0.03, //0.14, //0.153,
 
-            ac_hue: 130, //19,
-            ac_sat: 0.51, //0.61,
+            ac_hue: 20, //19,
+            ac_sat: 0.21, //0.61,
         }
     }
 
@@ -151,6 +151,7 @@ pub enum CS {
     Base,
     Box,
     WhiteBox,
+    FadingHighlight(f32),
     Custom(fn(&Theme) -> container::Style),
     Custom2(container::Style),
 }
@@ -194,6 +195,17 @@ impl CS {
                 },
                 shadow: Default::default(),
                 snap: true,
+            },
+            CS::FadingHighlight(a) => container::Style {
+                text_color: Some(t.fg),
+                background: Some(Background::Color(t.ac(11).scale_alpha(a))),
+                border: Border {
+                    width: 1.,
+                    radius: RAD,
+                    color: t.ac(4).scale_alpha(a),
+                },
+                snap: true,
+                ..Default::default()
             },
             CS::WhiteBox => container::Style {
                 text_color: Some(t.fg),

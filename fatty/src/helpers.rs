@@ -14,13 +14,13 @@ pub fn thead<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
         .size(14.5)
 }
 
-pub fn bold<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
-    text(f)
-        .font(Font {
-            weight: font::Weight::Bold,
-            ..Default::default()
-        })
-}
+// pub fn bold<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
+//     text(f)
+//         .font(Font {
+//             weight: font::Weight::Bold,
+//             ..Default::default()
+//         })
+// }
 
 pub fn mono<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
     text(f)

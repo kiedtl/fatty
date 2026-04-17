@@ -1189,15 +1189,15 @@ impl From<Id> for widget::Id {
 
 /// Produces a [`Task`] that snaps the [`Scrollable`] with the given [`Id`]
 /// to the provided `percentage` along the x & y axis.
-pub fn snap_to<Message: Send + 'static>(id: Id, offset: RelativeOffset<Option<f32>>) -> Task<Message> {
-    widget::operate(operation::scrollable::snap_to(id.0, offset))
-}
+// pub fn snap_to<Message: Send + 'static>(id: Id, offset: RelativeOffset<Option<f32>>) -> Task<Message> {
+//     widget::operate(operation::scrollable::snap_to(id.0, offset))
+// }
 
 /// Produces a [`Task`] that scrolls the [`Scrollable`] with the given [`Id`]
 /// to the provided [`AbsoluteOffset`] along the x & y axis.
-pub fn scroll_to<Message: Send + 'static>(id: Id, offset: AbsoluteOffset<Option<f32>>) -> Task<Message> {
-    widget::operate(operation::scrollable::scroll_to(id.0, offset))
-}
+// pub fn scroll_to<Message: Send + 'static>(id: Id, offset: AbsoluteOffset<Option<f32>>) -> Task<Message> {
+//     widget::operate(operation::scrollable::scroll_to(id.0, offset))
+// }
 
 fn notify_scroll<Message>(
     state: &mut State,
@@ -1537,10 +1537,10 @@ impl State {
             || self.y_scroller_grabbed_at.is_some()
     }
 
-    // Needed for the scrolling operations in main.rs.
-    pub fn viewport(&self) -> Option<Viewport> {
-        self.last_notified
-    }
+    // // Needed for the scrolling operations in main.rs.
+    // pub fn viewport(&self) -> Option<Viewport> {
+    //     self.last_notified
+    // }
 }
 
 #[derive(Debug)]

@@ -1,24 +1,30 @@
 #![allow(unused_imports)]
 
 use std::cell;
+use std::ffi::OsString;
 use std::fs::DirEntry;
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Child};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::fs::MetadataExt;
+use std::time::{Instant, Duration};
 
-//use brush_core::{self as bc, Shell};
+use futures::channel::mpsc::Sender;
+use futures::{StreamExt, SinkExt};
+use inotify;
 use itertools::Itertools;
-use vte;
-use rustix::fd::{AsFd, OwnedFd};
+use rustix::fd::{AsFd, OwnedFd, RawFd};
 use rustix::process::{kill_process, Pid, Signal};
-//use tokio::sync::Mutex as TokioMutex;
+use rustix::fs::FileType;
+use tokio::sync::watch;
+use vte;
 
 use iced::futures::stream;
 use iced::window;
-use iced::{Event, Element, Task, Subscription, Length};
+use iced::{Event, Element, Task, Subscription, Padding, Length};
 use iced::keyboard::{self, key, Modifiers};
 use iced::widget::{container, Row, table::{self, Table}, Column, row, text::{Rich, Span}, column, text, text_input, responsive, space};
 use iced::advanced::text::Ellipsis;
@@ -139,22 +145,10 @@ impl From<rustix::process::WaitStatus> for ExitReason {
     }
 }
 
-struct App {
-    master: OwnedFd,
-    slave: OwnedFd,
-    input: String,
-    listing: Vec<DirEntry>,
-    execs: Vec<Execution>,
-    ansi: vte::ansi::Processor,
-    theme: styles::Theme,
-    //shell: Arc<TokioMutex<Shell>>,
-
-    vwidth: cell::Cell<Option<f32>>,
-}
-
 #[derive(Clone, Debug)]
 pub enum Message {
     None,
+    Animate,
     Input(String),
     Run,
     ContinueProgram,
@@ -162,6 +156,21 @@ pub enum Message {
     JobResolved(usize, usize),
     Poll,
     Signal(Signal),
+    Inotify(OsString),
+}
+
+struct App {
+    master: OwnedFd,
+    slave: OwnedFd,
+    input: String,
+    execs: Vec<Execution>,
+    ansi: vte::ansi::Processor,
+    theme: styles::Theme,
+
+    listing: Vec<MyDirEntry>,
+    listing_last_changed: Option<(OsString, Instant)>,
+
+    vwidth: cell::Cell<Option<f32>>,
 }
 
 impl Drop for App {
@@ -198,6 +207,7 @@ impl App {
             Self {
                 input: String::new(),
                 listing: listing(),
+                listing_last_changed: None,
                 execs: Vec::new(),
                 master: pty.controller,
                 slave: pty.user,
@@ -218,6 +228,7 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::None => { }
+            Message::Animate => { }
             Message::Input(s) => self.input = s,
             Message::Run => {
                 match parser::parse_str(&self.input) {
@@ -319,6 +330,10 @@ impl App {
                     kill_process(pid, sig).unwrap();
                 }
             },
+            Message::Inotify(item) => {
+                self.listing_last_changed = Some((item, Instant::now()));
+                self.listing = listing();
+            },
         }
         Task::none()
     }
@@ -357,7 +372,25 @@ impl App {
 
         let jobs = watch_jobs(self);
 
-        Subscription::batch([poll, keys, wait, jobs])
+        let fswatch = if let Ok(path) = std::env::current_dir() {
+            fswatch(path)
+                .map(Message::Inotify)
+        } else {
+            Subscription::none()
+        };
+
+        let is_animating = match &self.listing_last_changed {
+            Some((_, at)) if at.elapsed().as_millis() < 300 => true,
+            _ => false,
+        };
+
+        let animation = if is_animating {
+            window::frames().map(|_| Message::Animate)
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch([poll, keys, wait, jobs, fswatch, animation])
     }
 
     fn view(&self) -> Elem<'_> {
@@ -373,58 +406,42 @@ impl App {
 
         let listing = Table::new(
             [
-                table::column(thead("mode"), |d: &DirEntry| {
-                    let met = d.metadata().unwrap();
-                    let mode = met.permissions().mode();
-                    utils::Mode(mode).to_iced()
-                    // text(utils::Mode(mode).to_string())
-                    //     .line_height(1.01)
-                    //     .size(12.)
-                    //     .font(iced::Font {
-                    //         family: iced::font::Family::name("Square"),
-                    //         ..Default::default()
-                    //     })
+                table::column(thead("mode"), |d: &MyDirEntry| {
+                    utils::Mode(d.mode).to_iced()
                 }),
                 // table::column(thead("user"), |d: &DirEntry| {
-                //     let met = d.metadata().unwrap();
-                //     let uname = unsafe {
-                //         let r = libc::getpwuid(met.uid());
-                //         if r.is_null() {
-                //             None
-                //         } else {
-                //             Some(
-                //                 std::ffi::CStr::from_ptr((*r).pw_name)
-                //                     .to_string_lossy()
-                //                     .to_string()
-                //             )
-                //         }
-                //     };
-
-                //     text(uname.unwrap_or("?".to_string()))
+                //     text(d.uname.unwrap_or("?".to_string()))
                 //         .ellipsis(Ellipsis::End)
                 // }),
-                table::column(thead("size"), |d: &DirEntry| {
-                    let met = d.metadata().unwrap();
-                    let e: Elem<'_> = if met.is_dir() {
-                        space()
-                            .into()
+                table::column(thead("size"), |d: &MyDirEntry| {
+                    let e: Elem<'_> = if d.kind == FileType::Directory {
+                        space().into()
                     } else {
-                        mono(utils::fmt_size(met.len()))
+                        mono(utils::fmt_size(d.size))
                             .into()
                     };
                     e
                 }),
-                table::column(thead("name"), |d: &DirEntry| {
-                    let met = d.metadata().unwrap();
-                    let mut fname = d.file_name().to_string_lossy().to_string();
-                    if met.is_dir() {
-                        fname.push('/');
-                    }
-                    text(fname)
+                table::column(thead("name"), |d: &MyDirEntry| {
+                    let class = match &self.listing_last_changed {
+                        Some((name, at)) if *name == d.raw_name && at.elapsed().as_millis() < 300 => {
+                            let f = (at.elapsed().as_millis() as f32 / 300.).powf(4.);
+                            CS::FadingHighlight(1. - f)
+                        },
+                        _ => CS::Base,
+                    };
+                    container(
+                        text(d.name.clone())
+                            .width(Length::Fill)
+                    )
+                        .padding(Padding { left: 2., right: 1., ..Default::default() })
+                        .class(class)
                 })
+                    .width(Length::Fill)
             ],
             &self.listing,
         )
+            .width(Length::Fill)
             .padding_y(1);
 
         let mut jobs = Column::new()
@@ -552,7 +569,7 @@ impl App {
                     column![
                         scrollable(
                             container(execs)
-                                .padding(iced::Padding {
+                                .padding(Padding {
                                     right: 15.,
                                     ..Default::default()
                                 })
@@ -567,7 +584,7 @@ impl App {
                 column![
                     scrollable(
                         container(listing)
-                            .padding(iced::Padding {
+                            .padding(Padding {
                                 bottom: 5.,
                                 top: 5.,
                                 right: 15.,
@@ -580,7 +597,7 @@ impl App {
                         .width(Length::Fill),
                     scrollable(
                         container(jobs)
-                            .padding(iced::Padding {
+                            .padding(Padding {
                                 bottom: 5.,
                                 top: 5.,
                                 right: 15.,
@@ -650,6 +667,34 @@ impl App {
     }
 }
 
+pub fn fswatch(path: PathBuf) -> Subscription<OsString> {
+    use inotify::WatchMask as W;
+
+    Subscription::run_with(path, |path| {
+        let path = path.clone();
+        stream::unfold(Some(path), |path| async move {
+            let fl = W::ATTRIB | W::CLOSE_WRITE | W::CREATE | W::DELETE | W::EXCL_UNLINK;
+
+            let path: PathBuf = path?;
+            let inot = inotify::Inotify::init().unwrap();
+            let wd = inot.watches().add(&path, fl).unwrap();
+
+            let mut buf = [0; 2048];
+            let mut stream = inot.into_event_stream(&mut buf)
+                .expect("Error converting to stream");
+
+            while let Some(event_or_err) = stream.next().await {
+                if let Ok(ev) = event_or_err {
+                    stream.watches().remove(wd).unwrap();
+                    return Some((ev.name.unwrap(), Some(path)));
+                }
+            }
+            stream.watches().remove(wd).unwrap();
+            None
+        })
+    })
+}
+
 pub fn wait_on(pid: Pid) -> Subscription<ExitReason> {
     Subscription::run_with(pid, |pid| stream::unfold(Some(*pid), |state| async move {
         let pid = state?;
@@ -671,11 +716,6 @@ pub fn wait_on(pid: Pid) -> Subscription<ExitReason> {
 }
 
 fn watch_jobs(app: &App) -> Subscription<Message> {
-    use tokio::sync::watch;
-    use std::hash::{Hash, Hasher};
-    use futures::SinkExt;
-    use futures::channel::mpsc::Sender;
-
     #[derive(Clone)]
     struct Watching {
         exec_ind: usize,
@@ -746,11 +786,43 @@ fn watch_jobs(app: &App) -> Subscription<Message> {
     )
 }
 
-fn listing() -> Vec<DirEntry> {
+struct MyDirEntry {
+    kind: FileType,
+    mode: u32,
+    size: u64,
+    raw_name: OsString,
+    name: String,
+    uname: Option<String>,
+}
+
+fn listing() -> Vec<MyDirEntry> {
     let mut entries = std::fs::read_dir(".")
         .unwrap()
-        .map(|res| res.unwrap())
+        .map(|res| {
+            let d = res.unwrap();
+            let met = d.metadata().unwrap();
+
+            let mode = met.permissions().mode();
+            let kind = FileType::from_raw_mode(mode);
+            let uname = unsafe {
+                let r = libc::getpwuid(met.uid());
+                (r.is_null()).then(||
+                    std::ffi::CStr::from_ptr((*r).pw_name)
+                        .to_string_lossy()
+                        .to_string()
+                )
+            };
+            let size = met.len();
+
+            let raw_name = d.file_name();
+            let mut name = raw_name.to_string_lossy().to_string();
+            if met.is_dir() {
+                name.push('/');
+            }
+
+            MyDirEntry { mode, kind, uname, size, raw_name, name }
+        })
         .collect::<Vec<_>>();
-    entries.sort_by_key(|i| i.file_name());
+    entries.sort_by_key(|i| i.name.clone());
     entries
 }

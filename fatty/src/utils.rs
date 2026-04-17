@@ -1,7 +1,7 @@
 use std::fmt;
 use rustix::process::Signal;
 
-use iced::{alignment, Background, Border};
+use iced::{alignment, Length, Background, Border};
 use iced::widget::{Text, text, Row, row, column, container, responsive};
 use iced::advanced::text::IntoFragment;
 
@@ -52,17 +52,6 @@ impl Mode {
 
         let m = self.0;
 
-        // let file_type = match m & 0o170000 {
-        //     0o100000 => '-', // file
-        //     0o040000 => 'd', // dir
-        //     0o120000 => 'l', // symlink
-        //     0o020000 => 'c', // char device
-        //     0o060000 => 'b', // block device
-        //     0o010000 => 'p', // fifo/pipe
-        //     0o140000 => 's', // socket
-        //     _        => '?',
-        // };
-
         fn txt<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
             mono(f)
                 .line_height(0.8)
@@ -94,13 +83,6 @@ impl Mode {
             (false, false) => NONE_CHAR,
         };
 
-        //write!(f, "{}{}{}\n{}{}{}\n{}{}{}",
-        //    //file_type,
-        //    bit(0o0400, 'r'), bit(0o0200, 'w'), owner_x,
-        //    bit(0o0040, 'r'), bit(0o0020, 'w'), group_x,
-        //    bit(0o0004, 'r'), bit(0o0002, 'w'), other_x,
-        //)
-
         let color_u = bitc(0o0100, X, bitc(0o0200, W, bitc(0o0400, R, BASE)));
         let color_g = bitc(0o0010, X, bitc(0o0020, W, bitc(0o0040, R, BASE)));
         let color_o = bitc(0o0001, X, bitc(0o0002, W, bitc(0o0004, R, BASE)));
@@ -111,7 +93,7 @@ impl Mode {
             (color_o, bit(0o0004, 'r'), bit(0o0002, 'w'), txt(other_x)),
         ];
 
-        let mut thr = Row::new().spacing(1);
+        let mut thr = Row::new().spacing(1).width(Length::Shrink);
 
         for (bg, r, w, x) in set {
             thr = thr.push(
