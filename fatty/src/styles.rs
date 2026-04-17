@@ -109,7 +109,7 @@ impl iced::widget::text::Catalog for Theme {
 
     fn style(&self, class: &Self::Class<'_>) -> iced::widget::text::Style {
         iced::widget::text::Style {
-            color: class.color(*self),
+            color: class.color(self),
         }
     }
 }
@@ -117,12 +117,14 @@ impl iced::widget::text::Catalog for Theme {
 #[derive(Copy, Clone, Debug)]
 pub enum TextClass {
     Normal,
+    Custom(fn(&Theme) -> Color),
 }
 
 impl TextClass {
-    pub fn color(self, _t: Theme) -> Option<Color> {
+    pub fn color(self, t: &Theme) -> Option<Color> {
         match self {
             TextClass::Normal => None,
+            TextClass::Custom(c) => Some((c)(t)),
         }
     }
 }
@@ -146,6 +148,7 @@ pub enum CS {
     Box,
     WhiteBox,
     Custom(fn(&Theme) -> container::Style),
+    Custom2(container::Style),
 }
 
 type CSFunc = fn(&Theme) -> container::Style;
@@ -200,6 +203,7 @@ impl CS {
                 snap: true,
             },
             CS::Custom(func) => (func)(t),
+            CS::Custom2(s) => s,
         }
     }
 }

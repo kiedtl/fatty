@@ -23,14 +23,16 @@ use iced::keyboard::{self, key, Modifiers};
 use iced::widget::{container, Row, table::{self, Table}, Column, row, text::{Rich, Span}, column, text, text_input, scrollable, responsive, space};
 use iced::advanced::text::Ellipsis;
 
-mod colors;
 mod bolger;
+mod colors;
+mod helpers;
 mod parser;
 mod styles;
 mod term;
 mod utils;
 mod vm;
 
+use helpers::*;
 use styles::CS;
 use vm::VMStatus;
 
@@ -173,7 +175,7 @@ impl App {
         self.theme
     }
 
-    fn new() -> Self { //(Self, Task<Message>) {
+    fn new() -> (Self, Task<Message>) {
         //let (_id, open) = window::open(window::Settings::default());
 
         // let shell = tokio::task::block_in_place(|| {
@@ -190,18 +192,21 @@ impl App {
         ).unwrap();
         set_pty_output(&pty.controller);
 
-        //(
+        (
             Self {
-            input: String::new(),
-            listing: listing(),
-            execs: Vec::new(),
-            master: pty.controller,
-            slave: pty.user,
-            ansi: vte::ansi::Processor::new(),
-            theme: styles::Theme::gruvbox(),
-            //shell: Arc::new(TokioMutex::new(shell)),
-            vwidth: cell::Cell::new(None),
-        }//, open.map(|_| Message::None))
+                input: String::new(),
+                listing: listing(),
+                execs: Vec::new(),
+                master: pty.controller,
+                slave: pty.user,
+                ansi: vte::ansi::Processor::new(),
+                theme: styles::Theme::gruvbox(),
+                //shell: Arc::new(TokioMutex::new(shell)),
+                vwidth: cell::Cell::new(None),
+            },
+            iced::font::set_defaults(iced::Font::new("Atkinson Hyperlegible Next"), 16.),
+            //open.map(|_| Message::None)
+        )
     }
 
     fn title(&self) -> String {
@@ -355,49 +360,48 @@ impl App {
 
         let listing = Table::new(
             [
-                table::column(text("Mode"), |d: &DirEntry| {
+                table::column(thead("mode"), |d: &DirEntry| {
                     let met = d.metadata().unwrap();
                     let mode = met.permissions().mode();
-                    text(utils::Mode(mode).to_string())
-                        .font(iced::Font {
-                            family: iced::font::Family::name("Drafting* Mono"),
-                            ..Default::default()
-                        })
+                    utils::Mode(mode).to_iced()
+                    // text(utils::Mode(mode).to_string())
+                    //     .line_height(1.01)
+                    //     .size(12.)
+                    //     .font(iced::Font {
+                    //         family: iced::font::Family::name("Square"),
+                    //         ..Default::default()
+                    //     })
                 }),
-                table::column(text("User"), |d: &DirEntry| {
-                    let met = d.metadata().unwrap();
-                    let uname = unsafe {
-                        let r = libc::getpwuid(met.uid());
-                        if r.is_null() {
-                            None
-                        } else {
-                            Some(
-                                std::ffi::CStr::from_ptr((*r).pw_name)
-                                    .to_string_lossy()
-                                    .to_string()
-                            )
-                        }
-                    };
+                // table::column(thead("user"), |d: &DirEntry| {
+                //     let met = d.metadata().unwrap();
+                //     let uname = unsafe {
+                //         let r = libc::getpwuid(met.uid());
+                //         if r.is_null() {
+                //             None
+                //         } else {
+                //             Some(
+                //                 std::ffi::CStr::from_ptr((*r).pw_name)
+                //                     .to_string_lossy()
+                //                     .to_string()
+                //             )
+                //         }
+                //     };
 
-                    text(uname.unwrap_or("?".to_string()))
-                        .ellipsis(Ellipsis::End)
-                }),
-                table::column(text("Size"), |d: &DirEntry| {
+                //     text(uname.unwrap_or("?".to_string()))
+                //         .ellipsis(Ellipsis::End)
+                // }),
+                table::column(thead("size"), |d: &DirEntry| {
                     let met = d.metadata().unwrap();
                     let e: Elem<'_> = if met.is_dir() {
                         space()
                             .into()
                     } else {
-                        text(utils::fmt_size(met.len()))
-                            .font(iced::Font {
-                                family: iced::font::Family::name("Drafting* Mono"),
-                                ..Default::default()
-                            })
+                        mono(utils::fmt_size(met.len()))
                             .into()
                     };
                     e
                 }),
-                table::column(text("Name"), |d: &DirEntry| {
+                table::column(thead("name"), |d: &DirEntry| {
                     let met = d.metadata().unwrap();
                     let mut fname = d.file_name().to_string_lossy().to_string();
                     if met.is_dir() {

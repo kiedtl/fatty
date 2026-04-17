@@ -64,20 +64,35 @@ impl Hsv {
 //     construct_rgb(r, g, b)
 // }
 
-// pub const fn deconstruct_rgb(rgb: u32) -> (u8, u8, u8) {
-//     (((rgb >> 16) & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, (rgb & 0xFF) as u8)
-// }
+pub const fn decompose(rgb: u32) -> (u8, u8, u8) {
+    (((rgb >> 16) & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, (rgb & 0xFF) as u8)
+}
 
-// pub const fn deconstruct_rgb_to_f32(rgb: u32) -> (f32, f32, f32) {
-//     let (r, g, b) = deconstruct_rgb(rgb);
-//     (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
-// }
+pub const fn deconstruct_rgb_to_f32(rgb: u32) -> (f32, f32, f32) {
+    let (r, g, b) = decompose(rgb);
+    (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+}
 
-// pub const fn construct_rgb(r: u8, g: u8, b: u8) -> u32 {
-//     ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-// }
+pub const fn compose(r: u8, g: u8, b: u8) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
 
-// pub const fn iced_color(rgb: u32) -> iced::Color {
-//     let (r, g, b) = deconstruct_rgb_to_f32(rgb);
-//     iced::Color { r, g, b, a: 1. }
-// }
+pub const fn iced_color(rgb: u32) -> iced::Color {
+    let (r, g, b) = deconstruct_rgb_to_f32(rgb);
+    iced::Color { r, g, b, a: 1. }
+}
+
+fn interpolate(a: u8, b: u8, f: f64) -> u8 {
+    let aa = a as f64 / 255.;
+    let ab = b as f64 / 255.;
+    ((aa + f * (ab - aa)) * 255.).min(255.) as u8
+}
+
+pub fn mix(a: u32, b: u32, frac: f64) -> u32 {
+    let (ar, ag, ab) = decompose(a);
+    let (br, bg, bb) = decompose(b);
+    let rr = interpolate(ar, br, frac);
+    let rg = interpolate(ag, bg, frac);
+    let rb = interpolate(ab, bb, frac);
+    compose(rr, rg, rb)
+}

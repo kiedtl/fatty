@@ -5,6 +5,7 @@ use iced::widget::text::{Span, Rich};
 use iced::widget::span;
 
 use crate::bolger::parser::*;
+use crate::helpers::*;
 use crate::styles::{CS, Theme};
 
 pub type Id = String;
@@ -60,7 +61,7 @@ impl Style {
             (true, true)   => iced::font::Family::name("Drafting* Mono"),
             (true, false)  => iced::font::Family::name("Fira Code"),
             (false, true)  => iced::font::Family::name("Nimbus Serif"),
-            (false, false) => iced::font::Family::name("Nimbus Sans"),
+            (false, false) => iced::font::Family::name("Atkinson Hyperlegible Next"),
         };
 
         font.weight = match self.size {
@@ -133,7 +134,7 @@ impl Element {
             Element::Id(id) => ids.get(id).unwrap().to_iced_span(style, ids),
             _ => unreachable!(),
         };
-        v = v.line_height(1.15);
+        v = v.line_height(1.2);
         v
     }
 
@@ -146,7 +147,7 @@ impl Element {
             Element::Header(l, e) => e.to_iced(Style { size: TextSize::H(*l), ..style }, ids),
             Element::Table { columns, rows } => {
                 let columns = columns.iter().enumerate().map(|(col_i, c)| {
-                    table::column(text(c.name.clone()), move |e: &Vec<Option<Element>>| {
+                    table::column(thead(c.name.clone()), move |e: &Vec<Option<Element>>| {
                         let e: Elem<'_> =
                             if let Some(Some(e)) = e.get(col_i) {
                                 e.to_iced(style, ids)
