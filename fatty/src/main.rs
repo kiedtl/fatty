@@ -1,7 +1,8 @@
 #![allow(unused_imports)]
 
 use std::cell;
-use std::ffi::OsString;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::fs::DirEntry;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -166,6 +167,7 @@ struct App {
     execs: Vec<Execution>,
     ansi: vte::ansi::Processor,
     theme: styles::Theme,
+    env: HashMap<OsString, OsString>,
 
     listing: Vec<MyDirEntry>,
     listing_last_changed: Option<(OsString, Instant)>,
@@ -215,6 +217,7 @@ impl App {
                 theme: styles::Theme::gruvbox(),
                 //shell: Arc::new(TokioMutex::new(shell)),
                 vwidth: cell::Cell::new(None),
+                env: std::env::vars_os().collect(),
             },
             iced::font::set_defaults(iced::Font::new("Atkinson Hyperlegible Next"), 16.),
             //open.map(|_| Message::None)
@@ -556,62 +559,89 @@ impl App {
         }
 
         container(
-            row![
-                column![
-                    responsive(move |size| {
-                        self.vwidth.set(Some(size.width));
-                        space()
-                            .height(1.)
-                            .into()
-                    })
-                        .height(Length::Shrink)
-                        .width(Length::Fill),
+            column![
+                row![
+                    column![
+                        responsive(move |size| {
+                            self.vwidth.set(Some(size.width));
+                            space()
+                                .height(1.)
+                                .into()
+                        })
+                            .height(Length::Shrink)
+                            .width(Length::Fill),
+                        column![
+                            scrollable(
+                                container(execs)
+                                    .padding(Padding {
+                                        right: 15.,
+                                        ..Default::default()
+                                    })
+                            )
+                                .anchor_bottom()
+                                .height(Length::Fill),
+                            input,
+                        ]
+                            .spacing(4.)
+                    ]
+                        .width(Length::FillPortion(2)),
                     column![
                         scrollable(
-                            container(execs)
+                            container(listing)
                                 .padding(Padding {
+                                    bottom: 5.,
+                                    top: 5.,
                                     right: 15.,
-                                    ..Default::default()
+                                    left: 5.,
                                 })
+                                .width(Length::Fill)
+                                .class(CS::WhiteBox)
                         )
+                            .height(Length::FillPortion(2))
+                            .width(Length::Fill),
+                        scrollable(
+                            container(jobs)
+                                .padding(Padding {
+                                    bottom: 5.,
+                                    top: 5.,
+                                    right: 15.,
+                                    left: 5.,
+                                })
+                                .width(Length::Fill)
+                                .class(CS::WhiteBox)
+                        )
+                            .height(Length::FillPortion(1))
+                            .width(Length::Fill)
                             .anchor_bottom()
-                            .height(Length::Fill),
-                        input,
                     ]
-                        .spacing(4.)
+                        .spacing(4)
+                        .width(Length::FillPortion(1)),
                 ]
-                    .width(Length::FillPortion(2)),
-                column![
-                    scrollable(
-                        container(listing)
-                            .padding(Padding {
-                                bottom: 5.,
-                                top: 5.,
-                                right: 15.,
-                                left: 5.,
-                            })
-                            .width(Length::Fill)
-                            .class(CS::WhiteBox)
-                    )
-                        .height(Length::FillPortion(2))
-                        .width(Length::Fill),
-                    scrollable(
-                        container(jobs)
-                            .padding(Padding {
-                                bottom: 5.,
-                                top: 5.,
-                                right: 15.,
-                                left: 5.,
-                            })
-                            .width(Length::Fill)
-                            .class(CS::WhiteBox)
-                    )
-                        .height(Length::FillPortion(1))
-                        .width(Length::Fill)
-                        .anchor_bottom()
-                ]
-                    .spacing(4)
-                    .width(Length::FillPortion(1)),
+                    .spacing(4),
+                container(
+                    row![
+                        mono(
+                            self.env.get(OsStr::new("USER"))
+                                .map_or(OsStr::new("?"), |v| v)
+                                .to_string_lossy(),
+                        ),
+                        text("@"),
+                        mono(rustix::system::uname().nodename().to_string_lossy().to_string()),
+                        text(" on "),
+                        mono(
+                            if let Ok(cwd) = std::env::current_dir() {
+                                let mut p = cwd.display().to_string();
+                                if let Some(home) = self.env.get(OsStr::new("HOME")) {
+                                    let home = home.to_string_lossy().to_string();
+                                    p = p.replace(&home, "~");
+                                }
+                                p
+                            } else {
+                                "No known CWD!".to_string()
+                            }
+                        )
+                    ]
+                )
             ]
                 .spacing(4)
         )
