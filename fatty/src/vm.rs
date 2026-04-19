@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use crate::{ExitReason, Execution};
 use crate::parser::*;
+use crate::{out, outln};
 
 use itertools::Itertools;
 use rustix::process::Pid;
@@ -16,6 +17,7 @@ use tokio::sync::watch;
 
 #[derive(Debug, Clone)]
 pub enum Instr {
+    ChangeDir { argv: Vec<Token> },
     Run {
         command: Command,
         // cond: RunCondition,
@@ -51,7 +53,14 @@ pub fn compile(ast: &[Ast]) -> Vec<Block> {
 
 fn compile_ast(ast: &Ast, out: &mut Vec<Instr>, blocks: &mut Vec<Block>) {
     match ast {
-        Ast::Stmt(Stmt::Command(command)) => out.push(Instr::Run { command: command.clone() }),
+        Ast::Stmt(Stmt::Command(command)) => {
+            if let Some(command_str) = command.argv.get(0) {
+                match command_str.as_str() {
+                    "cd" => out.push(Instr::ChangeDir { argv: command.argv[1..].to_vec() }),
+                    _ => out.push(Instr::Run { command: command.clone() }),
+                }
+            }
+        },
         Ast::Stmt(Stmt::Pipeline(Pipeline { items })) => {
             let is_simple = !items.iter().any(|c| matches!(c, SubOrCommand::Sub(_)));
 
@@ -131,6 +140,18 @@ impl VM {
         self.pc.1 = Some(instr_pc);
 
         match &self.program[self.pc.0].contents[instr_pc] {
+            Instr::ChangeDir { argv } => {
+                let argv = prepare_args(&argv).collect::<Vec<_>>();
+
+                if argv.len() != 1 {
+                    outln!("Usage: cd <dir>");
+                    return;
+                }
+
+                if let Err(e) = std::env::set_current_dir(&argv[0]) {
+                    outln!("cd: {e:?}");
+                }
+            }
             Instr::Run { command } => {
                 let (cmd, args) = prepare_invocation(&command.argv);
                 let mut pcmd = std::process::Command::new(&cmd);
@@ -267,6 +288,8 @@ pub fn print_program(p: &[Block]) {
         println!("Block {blocki}:");
         for instr in &block.contents {
             match instr {
+                Instr::ChangeDir { argv }
+                    => println!("  - cd {}", argv.iter().map(|t| t.to_string()).join(" ")),
                 Instr::Run { command: Command { argv } }
                     => println!("  - run {}", argv.iter().map(|t| t.to_string()).join(" ")),
                 Instr::RunSimplePipeline { commands }
@@ -283,16 +306,19 @@ pub fn print_program(p: &[Block]) {
     }
 }
 
-fn prepare_invocation(argv: &[Token]) -> (String, impl Iterator<Item = String>) {
-    let mut args = argv
-        .iter()
+fn prepare_args(argv: &[Token]) -> impl Iterator<Item = String> {
+    argv.iter()
         .map(|tok| {
             match tok {
                 Token::Word(s) => expand_token(&s),
                 _ => vec![tok.to_string()],
             }
         })
-        .flatten();
+        .flatten()
+}
+
+fn prepare_invocation(argv: &[Token]) -> (String, impl Iterator<Item = String>) {
+    let mut args = prepare_args(argv);
     let command = args.next().unwrap();
     (command, args)
 }
@@ -323,6 +349,8 @@ fn expand_glob(token: &str) -> Vec<String> {
         .filter_map(|entry| entry.ok())
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
+
+    println!("expanded {} into {:?}", token, matches);
 
     // bash behaviour: if no match, pass the literal token through
     if matches.is_empty() { vec![token.to_owned()] } else { matches }

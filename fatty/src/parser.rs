@@ -21,6 +21,13 @@ impl Token {
             Token::Word(s) => s.clone(),
         }
     }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Token::String(s) => s,
+            Token::Word(s) => s,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

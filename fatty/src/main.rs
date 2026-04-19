@@ -660,19 +660,18 @@ impl App {
                     Ok(n) => {
                         self.ansi.advance(&mut last.term, &buf[0..n]);
 
-                        let mut buf_last = 0;
-
                         if !last.b_err {
-                            for ind in memchr::memchr3_iter(b'(', b')', b'"', &buf[0..n]) {
+                            let mut buf_last = 0;
+                            for ind in 0..n {
                                 match buf[ind] {
                                     b'(' => last.p_stack += 1,
                                     b')' if last.p_stack == 0 => last.b_err = true,
                                     b')' => last.p_stack -= 1,
                                     b'"' => last.q_flag = !last.q_flag,
-                                    _ => unreachable!(),
+                                    _ => continue,
                                 }
 
-                                if last.p_stack == 0 && !last.q_flag {
+                                if !last.b_err && last.p_stack == 0 && !last.q_flag {
                                     last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..ind + 1]));
                                     buf_last = ind + 1;
 
@@ -685,9 +684,9 @@ impl App {
                                     }
                                 }
                             }
-                        }
 
-                        last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..n]));
+                            last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..n]));
+                        }
                     },
                     Err(rustix::io::Errno::AGAIN) => return,
                     e => _ = e.unwrap(),
