@@ -1104,7 +1104,6 @@ dependencies = [
  "inotify",
  "itertools",
  "libc",
- "memchr",
  "pest",
  "pest_derive",
  "raw-window-handle",
