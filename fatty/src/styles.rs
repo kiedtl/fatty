@@ -4,6 +4,7 @@ use iced::widget::{container, button, text_input, table};
 use vte::ansi::Rgb;
 use crate::colors::Hsv;
 use crate::widgets::scrollable;
+use crate::widgets::input;
 
 const RAD_PX: f32 = 2.;
 pub const RAD: Radius = Radius { top_left: RAD_PX, top_right: RAD_PX, bottom_right: RAD_PX, bottom_left: RAD_PX };
@@ -248,6 +249,19 @@ impl text_input::Catalog for Theme {
     }
 }
 
+impl input::Catalog for Theme {
+    type Class<'a> = Box<dyn Fn(&Theme, input::Status) -> input::Style + 'a>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(myinput)
+    }
+
+    fn style(&self, class: &Self::Class<'_>, status: input::Status) -> input::Style {
+        class(self, status)
+    }
+}
+
+
 impl button::Catalog for Theme {
     type Class<'a> = Box<dyn Fn(&Theme, button::Status) -> button::Style + 'a>;
 
@@ -397,6 +411,45 @@ pub fn input(t: &Theme, status: text_input::Status) -> text_input::Style {
             ..active
         },
         text_input::Status::Disabled => text_input::Style {
+            background: iced::Background::Color(t.bg(14)),
+            value: active.placeholder,
+            ..active
+        },
+    }
+}
+
+pub fn myinput(t: &Theme, status: input::Status) -> input::Style {
+    let active = input::Style {
+        background: iced::Background::Color(t.white),
+        border: Border {
+            radius: RAD,
+            width: 2.,
+            color: t.bg(8),
+        },
+        icon: t.ac(4),
+        placeholder: t.bg(8),
+        value: t.fg,
+        cursor: t.bg(10),
+        selection: t.ac(14),
+    };
+
+    match status {
+        input::Status::Active => active,
+        input::Status::Hovered => input::Style {
+            border: Border {
+                color: t.ac(12),
+                ..active.border
+            },
+            ..active
+        },
+        input::Status::Focused { .. } => input::Style {
+            border: Border {
+                color: t.ac(8),
+                ..active.border
+            },
+            ..active
+        },
+        input::Status::Disabled => input::Style {
             background: iced::Background::Color(t.bg(14)),
             value: active.placeholder,
             ..active

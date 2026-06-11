@@ -44,6 +44,8 @@ use helpers::*;
 use styles::CS;
 use vm::VMStatus;
 use widgets::scrollable::scrollable;
+use widgets::input::input;
+use widgets::controller::controller;
 
 const FONT_SIZE: f32 = 15.0;
 
@@ -146,6 +148,11 @@ impl From<rustix::process::WaitStatus> for ExitReason {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ControlState {
+    Normal, Insert,
+}
+
 #[derive(Clone, Debug)]
 pub enum Message {
     None,
@@ -158,11 +165,13 @@ pub enum Message {
     Poll,
     Signal(Signal),
     Inotify(OsString),
+    ChangeControlState(ControlState),
 }
 
 struct App {
     master: OwnedFd,
     slave: OwnedFd,
+    control_state: ControlState,
     input: String,
     execs: Vec<Execution>,
     ansi: vte::ansi::Processor,
@@ -207,6 +216,7 @@ impl App {
 
         (
             Self {
+                control_state: ControlState::Normal,
                 input: String::new(),
                 listing: listing(),
                 listing_last_changed: None,
@@ -337,6 +347,9 @@ impl App {
                 self.listing_last_changed = Some((item, Instant::now()));
                 self.listing = listing();
             },
+            Message::ChangeControlState(state) => {
+                self.control_state = state;
+            }
         }
         Task::none()
     }
@@ -548,7 +561,7 @@ impl App {
             );
         }
 
-        let mut input = text_input("rm -rf /", &self.input);
+        let mut input = input(self.control_state, "rm -rf /", &self.input);
 
         if let Some(last) = self.execs.last() && !last.vm.done {
             // Input disabled.
@@ -558,97 +571,101 @@ impl App {
                 .on_submit(Message::Run);
         }
 
-        container(
-            column![
-                row![
-                    column![
-                        responsive(move |size| {
-                            self.vwidth.set(Some(size.width));
-                            space()
-                                .height(1.)
-                                .into()
-                        })
-                            .height(Length::Shrink)
-                            .width(Length::Fill),
+        controller(
+            self.control_state,
+            Message::ChangeControlState,
+            container(
+                column![
+                    row![
+                        column![
+                            responsive(move |size| {
+                                self.vwidth.set(Some(size.width));
+                                space()
+                                    .height(1.)
+                                    .into()
+                            })
+                                .height(Length::Shrink)
+                                .width(Length::Fill),
+                            column![
+                                scrollable(
+                                    container(execs)
+                                        .padding(Padding {
+                                            right: 15.,
+                                            ..Default::default()
+                                        })
+                                )
+                                    .anchor_bottom()
+                                    .height(Length::Fill),
+                                input,
+                            ]
+                                .spacing(4.)
+                        ]
+                            .width(Length::FillPortion(2)),
                         column![
                             scrollable(
-                                container(execs)
+                                container(listing)
                                     .padding(Padding {
+                                        bottom: 5.,
+                                        top: 5.,
                                         right: 15.,
-                                        ..Default::default()
+                                        left: 5.,
                                     })
+                                    .width(Length::Fill)
+                                    .class(CS::WhiteBox)
                             )
+                                .height(Length::FillPortion(2))
+                                .width(Length::Fill),
+                            scrollable(
+                                container(jobs)
+                                    .padding(Padding {
+                                        bottom: 5.,
+                                        top: 5.,
+                                        right: 15.,
+                                        left: 5.,
+                                    })
+                                    .width(Length::Fill)
+                                    .class(CS::WhiteBox)
+                            )
+                                .height(Length::FillPortion(1))
+                                .width(Length::Fill)
                                 .anchor_bottom()
-                                .height(Length::Fill),
-                            input,
                         ]
-                            .spacing(4.)
+                            .spacing(4)
+                            .width(Length::FillPortion(1)),
                     ]
-                        .width(Length::FillPortion(2)),
-                    column![
-                        scrollable(
-                            container(listing)
-                                .padding(Padding {
-                                    bottom: 5.,
-                                    top: 5.,
-                                    right: 15.,
-                                    left: 5.,
-                                })
-                                .width(Length::Fill)
-                                .class(CS::WhiteBox)
-                        )
-                            .height(Length::FillPortion(2))
-                            .width(Length::Fill),
-                        scrollable(
-                            container(jobs)
-                                .padding(Padding {
-                                    bottom: 5.,
-                                    top: 5.,
-                                    right: 15.,
-                                    left: 5.,
-                                })
-                                .width(Length::Fill)
-                                .class(CS::WhiteBox)
-                        )
-                            .height(Length::FillPortion(1))
-                            .width(Length::Fill)
-                            .anchor_bottom()
-                    ]
-                        .spacing(4)
-                        .width(Length::FillPortion(1)),
-                ]
-                    .spacing(4),
-                container(
-                    row![
-                        mono(
-                            self.env.get(OsStr::new("USER"))
-                                .map_or(OsStr::new("?"), |v| v)
-                                .to_string_lossy(),
-                        ),
-                        text("@"),
-                        mono(rustix::system::uname().nodename().to_string_lossy().to_string()),
-                        text(" on "),
-                        mono(
-                            if let Ok(cwd) = std::env::current_dir() {
-                                let mut p = cwd.display().to_string();
-                                if let Some(home) = self.env.get(OsStr::new("HOME")) {
-                                    let home = home.to_string_lossy().to_string();
-                                    p = p.replace(&home, "~");
+                        .spacing(4),
+                    container(
+                        row![
+                            mono(
+                                self.env.get(OsStr::new("USER"))
+                                    .map_or(OsStr::new("?"), |v| v)
+                                    .to_string_lossy(),
+                            ),
+                            text("@"),
+                            mono(rustix::system::uname().nodename().to_string_lossy().to_string()),
+                            text(" on "),
+                            mono(
+                                if let Ok(cwd) = std::env::current_dir() {
+                                    let mut p = cwd.display().to_string();
+                                    if let Some(home) = self.env.get(OsStr::new("HOME")) {
+                                        let home = home.to_string_lossy().to_string();
+                                        p = p.replace(&home, "~");
+                                    }
+                                    p
+                                } else {
+                                    "No known CWD!".to_string()
                                 }
-                                p
-                            } else {
-                                "No known CWD!".to_string()
-                            }
-                        )
-                    ]
-                )
-            ]
-                .spacing(4)
+                            )
+                        ]
+                    )
+                ]
+                    .spacing(4)
+            )
+                .padding(5)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .class(CS::Outer)
         )
-            .padding(5)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .class(CS::Outer)
             .into()
     }
 
