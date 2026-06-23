@@ -1,0 +1,7 @@
+[package]
+name = "estella"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+minicbor = { version = "2.2.2", features = ["std", "alloc"] }

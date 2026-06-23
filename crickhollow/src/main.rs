@@ -3,6 +3,7 @@ use std::path::Path;
 
 mod bolger;
 mod cp;
+mod df;
 mod ps;
 
 fn main() {
@@ -10,6 +11,7 @@ fn main() {
         let p = Path::new(&argv0);
         match p.file_name() {
             Some(f) if f == OsStr::new("cp") => cp::main(),
+            Some(f) if f == OsStr::new("df") => df::main(),
             Some(f) if f == OsStr::new("ps") => ps::main(),
             Some(f) => eprintln!("Unknown file {f:?}."),
             None => eprintln!("Need argv[0]"),

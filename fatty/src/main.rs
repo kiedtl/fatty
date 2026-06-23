@@ -32,6 +32,7 @@ use iced::advanced::text::Ellipsis;
 
 mod bolger;
 mod colors;
+mod estella_ui;
 mod helpers;
 mod parser;
 mod styles;
@@ -93,7 +94,9 @@ pub struct Execution {
     vm: vm::VM,
     term: term::Term,
     output: String,
+    outputb: Vec<u8>,
     document: bolger::ui::Document,
+    object: Option<estella::Value>,
     exit_reason: Option<ExitReason>,
 
     b_err: bool, // Is the output corrupted permanently
@@ -107,7 +110,9 @@ impl Execution {
             string, vm,
             term: term::Term::new(width),
             output: "".to_owned(),
+            outputb: Vec::new(),
             document: bolger::ui::Document::new(),
+            object: None,
             exit_reason: None,
             b_err: false,
             p_stack: 0,
@@ -508,23 +513,7 @@ impl App {
                         .class(CS::Box)
                         .padding(3),
                     if !exec.document.elements.is_empty() {
-                        let e: Elem<'_> = space().into();
-                        e
-                    } else {
-                        container(
-                            widgets::tty::Tty::new(
-                                &exec.term,
-                                &self.theme,
-                                FONT_SIZE,
-                                |term, theme, color| term.resolve(theme, color),
-                            )
-                        )
-                            .padding(1)
-                            .width(Length::Fill)
-                            .into()
-                    },
-                    scrollable(
-                        if !exec.document.elements.is_empty() {
+                        let e: Elem<'_> = scrollable({
                             let mut uis = Column::new()
                                 .spacing(0);
                             let mut spans = Vec::new();
@@ -543,10 +532,23 @@ impl App {
 
                             let e: Elem<'_> = uis.into();
                             e
-                        } else {
-                            space().into()
-                        }
-                    ),
+                        }).into();
+                        e
+                    } else if let Some(object) = &exec.object {
+                        scrollable(estella_ui::to_iced(object)).into()
+                    } else {
+                        container(
+                            widgets::tty::Tty::new(
+                                &exec.term,
+                                &self.theme,
+                                FONT_SIZE,
+                                |term, theme, color| term.resolve(theme, color),
+                            )
+                        )
+                            .padding(1)
+                            .width(Length::Fill)
+                            .into()
+                    },
                     text({
                         let mut s = format!("p_stack: {}; ", exec.p_stack);
                         if exec.q_flag {
@@ -690,19 +692,33 @@ impl App {
 
                                 if !last.b_err && last.p_stack == 0 && !last.q_flag {
                                     last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..ind + 1]));
+                                    last.outputb.extend(&buf[buf_last..ind + 1]);
                                     buf_last = ind + 1;
 
                                     match bolger::parser::parse(&last.output) {
                                         Ok(ast) => {
+                                            last.outputb.clear();
                                             last.output.clear();
                                             last.document.consume_nodes(&ast).unwrap();
                                         },
-                                        Err(e) => println!("{e:?}"),
+                                        Err(e) => {
+                                            println!("bolger: {e:?}");
+                                        }
                                     }
                                 }
                             }
 
                             last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..n]));
+                            last.outputb.extend(&buf[buf_last..n]);
+
+                            let mut bd = estella::buffer_decoder(&last.outputb);
+                            match estella::Value::read(&mut bd) {
+                                Ok(obj) => last.object = Some(obj),
+                                Err(e) => {
+                                    last.object = None;
+                                    println!("estella: {e:?}");
+                                }
+                            }
                         }
                     },
                     Err(rustix::io::Errno::AGAIN) => return,
