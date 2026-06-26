@@ -17,7 +17,7 @@ use futures::channel::mpsc::Sender;
 use futures::{StreamExt, SinkExt};
 use inotify;
 use itertools::Itertools;
-use rustix::fd::{AsFd, OwnedFd, RawFd};
+use rustix::fd::{AsFd, OwnedFd, RawFd, AsRawFd};
 use rustix::process::{kill_process, Pid, Signal};
 use rustix::fs::FileType;
 use tokio::sync::watch;
@@ -32,7 +32,7 @@ use iced::advanced::text::Ellipsis;
 
 mod bolger;
 mod colors;
-mod estella_ui;
+mod bwine_ui;
 mod helpers;
 mod parser;
 mod styles;
@@ -90,13 +90,16 @@ fn main() -> iced::Result {
 }
 
 pub struct Execution {
+    fd3_master: OwnedFd,
+    fd3_slave: OwnedFd,
+
     string: String,
     vm: vm::VM,
     term: term::Term,
     output: String,
     outputb: Vec<u8>,
     document: bolger::ui::Document,
-    object: Option<estella::Value>,
+    object: Option<bwine::Value<'static>>,
     exit_reason: Option<ExitReason>,
 
     b_err: bool, // Is the output corrupted permanently
@@ -106,7 +109,9 @@ pub struct Execution {
 
 impl Execution {
     pub fn new(string: String, vm: vm::VM, width: usize) -> Execution {
+        let (fd3_master, fd3_slave) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::NONBLOCK).unwrap();
         Execution {
+            fd3_master, fd3_slave,
             string, vm,
             term: term::Term::new(width),
             output: "".to_owned(),
@@ -118,6 +123,13 @@ impl Execution {
             p_stack: 0,
             q_flag: false,
         }
+    }
+
+    pub fn cleanup(&mut self) {
+        // unsafe {
+        //     rustix::io::close(self.fd3_master.as_raw_fd());
+        //     rustix::io::close(self.fd3_slave.as_raw_fd());
+        // }
     }
 }
 
@@ -302,10 +314,11 @@ impl App {
                 if let Some(current) = self.execs.last_mut() {
                     assert!(current.vm.waiting_on == None);
                     loop {
-                        current.vm.execute(Some(self.slave.as_fd()));
+                        current.vm.execute(Some(self.slave.as_fd()), Some(current.fd3_slave.as_fd()));
 
                         if current.vm.done {
                             current.exit_reason = current.vm.child_exit_stack.pop();
+                            current.cleanup();
                             break;
                         } else if current.vm.waiting_on.is_some() {
                             break;
@@ -535,7 +548,7 @@ impl App {
                         }).into();
                         e
                     } else if let Some(object) = &exec.object {
-                        scrollable(estella_ui::to_iced(object)).into()
+                        scrollable(bwine_ui::to_iced(object)).into()
                     } else {
                         container(
                             widgets::tty::Tty::new(
@@ -692,12 +705,10 @@ impl App {
 
                                 if !last.b_err && last.p_stack == 0 && !last.q_flag {
                                     last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..ind + 1]));
-                                    last.outputb.extend(&buf[buf_last..ind + 1]);
                                     buf_last = ind + 1;
 
                                     match bolger::parser::parse(&last.output) {
                                         Ok(ast) => {
-                                            last.outputb.clear();
                                             last.output.clear();
                                             last.document.consume_nodes(&ast).unwrap();
                                         },
@@ -709,19 +720,28 @@ impl App {
                             }
 
                             last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..n]));
-                            last.outputb.extend(&buf[buf_last..n]);
+                        }
+                    },
+                    Err(rustix::io::Errno::AGAIN) => break,
+                    e => _ = e.unwrap(),
+                }
+            }
 
-                            let mut bd = estella::buffer_decoder(&last.outputb);
-                            match estella::Value::read(&mut bd) {
-                                Ok(obj) => last.object = Some(obj),
-                                Err(e) => {
-                                    last.object = None;
-                                    println!("estella: {e:?}");
-                                }
+            loop {
+                match rustix::io::read(&last.fd3_master, &mut buf) {
+                    Ok(n) => {
+                        last.outputb.extend(&buf[0..n]);
+
+                        let mut bd = bwine::buffer_decoder(&last.outputb);
+                        match bwine::Value::read(&mut bd) {
+                            Ok(obj) => last.object = Some(obj),
+                            Err(e) => {
+                                last.object = None;
+                                println!("bwine: {e:?}");
                             }
                         }
                     },
-                    Err(rustix::io::Errno::AGAIN) => return,
+                    Err(rustix::io::Errno::AGAIN) => break,
                     e => _ = e.unwrap(),
                 }
             }

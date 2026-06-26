@@ -1,12 +1,14 @@
 use iced::{Background, Border, Padding, Length, alignment};
 use iced::widget::{container, row, text, space, responsive, table::{self, Table}, grid, column};
-use estella::Value;
+use bwine::Value;
 
 use crate::helpers::*;
+use crate::widgets::scrollable;
 use crate::Elem;
 
 pub fn to_iced<'a>(value: &'a Value) -> Elem<'a> {
     match value {
+        Value::Path(p) => text(p.display().to_string()).into(),
         Value::Int(int) => text(int.to_string()).into(),
         Value::Bytes(bytes) => grid(bytes.iter().map(|v| text(format!("{v:0>2X}")).into())).into(),
         Value::Text(value) => text(value.to_string()).into(),
@@ -17,13 +19,19 @@ pub fn to_iced<'a>(value: &'a Value) -> Elem<'a> {
                 table::column(thead("value"), move |(_, value): &(Value, Value)| to_iced(value)),
             ];
 
-            container(
-                Table::new(columns, rows)
-                    .padding_y(1)
-            )
-                .width(Length::Fill)
-                .align_x(alignment::Horizontal::Center)
-                .into()
+            let dir =
+                if rows.len() > 30 {
+                    scrollable::Direction::Both {
+                        vertical: scrollable::Scrollbar::default(),
+                        horizontal: scrollable::Scrollbar::default(),
+                    }
+                } else {
+                    scrollable::Direction::Horizontal(scrollable::Scrollbar::default())
+                };
+            scrollable::Scrollable::with_direction(
+                Table::new(columns, rows).padding_y(1),
+                dir
+            ).into()
         },
         Value::Tag(tag, value) => column![
             text(format!("Tag: {tag}")),
@@ -47,13 +55,22 @@ pub fn to_iced<'a>(value: &'a Value) -> Elem<'a> {
                 })
             }).collect::<Vec<_>>();
 
-            container(
-                Table::new(columns, rows)
-                    .padding_y(1)
-            )
-                .width(Length::Fill)
-                .align_x(alignment::Horizontal::Center)
-                .into()
+            let dir =
+                if rows.len() > 30 {
+                    scrollable::Direction::Both {
+                        vertical: scrollable::Scrollbar::default(),
+                        horizontal: scrollable::Scrollbar::default(),
+                    }
+                } else {
+                    scrollable::Direction::Horizontal(scrollable::Scrollbar::default())
+                };
+
+            scrollable::Scrollable::with_direction(
+                container(
+                    Table::new(columns, rows).padding_y(1)
+                ).clip(true),
+                dir
+            ).into()
         },
     }
 }

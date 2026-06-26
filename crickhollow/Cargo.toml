@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+brandywine = { path = "../brandywine" }
 clap = { version = "4.6.0", features = ["derive"] }
+dashmap = "6"
 libc = "0.2.184"
-estella = { path = "../estella" }
 nix = { version = "0.31", features = ["fs", "user"] }
+rayon = "1.11"
+rustix = "1.1.4"

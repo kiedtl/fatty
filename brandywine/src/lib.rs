@@ -1,43 +1,60 @@
+use std::path::{Path, PathBuf};
+use std::os::unix::ffi::OsStrExt;
 use std::io::{self, BufWriter};
+use std::ffi::{OsStr, OsString};
 use std::borrow::Cow;
+use std::sync::LazyLock;
+
 use minicbor::data::{Int, Tag, Type};
 use minicbor::{decode, Decoder};
 use minicbor::{encode, Encoder};
+use rustix::fd::{OwnedFd, BorrowedFd, FromRawFd, AsFd};
 
 pub const TABLE_TAG: u64 = 0x1FA772010;
+pub const PATH_TAG: u64 = 0x1FA772011;
 
 #[derive(Debug, Clone)]
-pub enum Value {
-    Int(i128),                // type 0/1: see range note below
-    Bytes(Vec<u8>),           // type 2: opaque bytes
-    Text(Cow<'static, str>),  // type 3: UTF-8
-    Array(Vec<Value>),        // type 4
-    Map(Vec<(Value, Value)>), // type 5: ordered pairs, not a HashMap
-    Tag(u64, Box<Value>),     // type 6: semantic annotation on one item
-    Float(f64),               // type 7: f16/f32/f64 all widened to f64
-    Bool(bool),               // type 7
-    Null,                     // type 7
-    Undefined,                // type 7: distinct from Null
-    Simple(u8),               // type 7: other simple values
+pub enum Value<'a> {
+    Path(Cow<'a, Path>),
+    // type 0/1
+    Int(i128),
+    // type 2: opaque bytes
+    Bytes(Vec<u8>),
+    // type 3: UTF-8
+    Text(Cow<'static, str>),
+    // type 4
+    Array(Vec<Value<'a>>),
+    // type 5: ordered pairs
+    Map(Vec<(Value<'a>, Value<'a>)>),
+    // type 6: semantic annotation on one item
+    Tag(u64, Box<Value<'a>>),
 
+    // Type 7 ----
+    Float(f64),
+    Bool(bool),
+    Null,
+    Undefined,
+    Simple(u8),
+
+    // Tagged value
     Table {
-        header: Vec<Value>,
-        rows: Vec<Vec<Value>>,
+        header: Vec<Value<'a>>,
+        rows: Vec<Vec<Value<'a>>>,
     },
 }
 
-impl From<usize>  for Value { fn from(s: usize)  -> Value { Value::Int(s as _) } }
-impl From<u64>    for Value { fn from(s: u64)    -> Value { Value::Int(s as _) } }
-impl From<u32>    for Value { fn from(s: u32)    -> Value { Value::Int(s as _) } }
-impl From<u16>    for Value { fn from(s: u16)    -> Value { Value::Int(s as _) } }
-impl From<u8>     for Value { fn from(s: u8)     -> Value { Value::Int(s as _) } }
-impl From<isize>  for Value { fn from(s: isize)  -> Value { Value::Int(s as _) } }
-impl From<i64>    for Value { fn from(s: i64)    -> Value { Value::Int(s as _) } }
-impl From<i32>    for Value { fn from(s: i32)    -> Value { Value::Int(s as _) } }
-impl From<i16>    for Value { fn from(s: i16)    -> Value { Value::Int(s as _) } }
-impl From<i8>     for Value { fn from(s: i8)     -> Value { Value::Int(s as _) } }
-impl From<String> for Value { fn from(s: String) -> Value { Value::text(s) } }
-impl From<&'static str> for Value { fn from(s: &'static str) -> Value { Value::text(s) } }
+impl From<usize>  for Value<'static> { fn from(s: usize)  -> Value<'static> { Value::Int(s as _) } }
+impl From<u64>    for Value<'static> { fn from(s: u64)    -> Value<'static> { Value::Int(s as _) } }
+impl From<u32>    for Value<'static> { fn from(s: u32)    -> Value<'static> { Value::Int(s as _) } }
+impl From<u16>    for Value<'static> { fn from(s: u16)    -> Value<'static> { Value::Int(s as _) } }
+impl From<u8>     for Value<'static> { fn from(s: u8)     -> Value<'static> { Value::Int(s as _) } }
+impl From<isize>  for Value<'static> { fn from(s: isize)  -> Value<'static> { Value::Int(s as _) } }
+impl From<i64>    for Value<'static> { fn from(s: i64)    -> Value<'static> { Value::Int(s as _) } }
+impl From<i32>    for Value<'static> { fn from(s: i32)    -> Value<'static> { Value::Int(s as _) } }
+impl From<i16>    for Value<'static> { fn from(s: i16)    -> Value<'static> { Value::Int(s as _) } }
+impl From<i8>     for Value<'static> { fn from(s: i8)     -> Value<'static> { Value::Int(s as _) } }
+impl From<String> for Value<'static> { fn from(s: String) -> Value<'static> { Value::text(s) } }
+impl From<&'static str> for Value<'static> { fn from(s: &'static str) -> Value<'static> { Value::text(s) } }
 
 // impl<T, I> From<I> for Value
 // where
@@ -49,7 +66,7 @@ impl From<&'static str> for Value { fn from(s: &'static str) -> Value { Value::t
 //     }
 // }
 
-impl Value {
+impl<'a> Value<'a> {
     pub fn text(value: impl Into<Cow<'static, str>>) -> Self {
         Value::Text(value.into())
     }
@@ -58,6 +75,10 @@ impl Value {
         -> Result<(), encode::Error<W::Error>>
     {
         match self {
+            Value::Path(p) => {
+                e.tag(Tag::new(PATH_TAG))?;
+                e.bytes(p.as_os_str().as_bytes())?;
+            }
             Value::Int(x) => {
                 let n = Int::try_from(*x)
                     // TODO: Outside CBOR range, need bignum tag
@@ -109,7 +130,15 @@ impl Value {
         Ok(())
     }
 
-    pub fn read(d: &mut Decoder) -> Result<Value, minicbor::decode::Error> {
+    pub fn read(d: &mut Decoder) -> Result<Value<'static>, minicbor::decode::Error> {
+        fn read_chunks_osstring(d: &mut Decoder) -> Result<OsString, minicbor::decode::Error> {
+            let mut buf = OsString::new();
+            for chunk in d.bytes_iter()? {
+                buf.push(OsStr::from_bytes(chunk?));
+            }
+            Ok(buf)
+        }
+
         fn read_chunks(d: &mut Decoder) -> Result<Vec<u8>, minicbor::decode::Error> {
             let mut buf = Vec::new();
             for chunk in d.bytes_iter()? {
@@ -166,12 +195,19 @@ impl Value {
             }
             Type::Tag => {
                 match d.tag()?.into() {
+                    PATH_TAG => {
+                        let path = PathBuf::from(read_chunks_osstring(d)?);
+                        Ok(Value::Path(path.into()))
+                    },
                     TABLE_TAG => {
                         let Value::Array(header) = Value::read(d)? else { todo!() };
                         let mut rows = Vec::new();
                         let n = d.array()?;
                         read_seq(d, n, |d| {
-                            let Value::Array(row) = Value::read(d)? else { todo!() };
+                            let row = match Value::read(d)? {
+                                Value::Array(row) => row,
+                                c => panic!("Expected array, got {c:?}"),
+                            };
                             rows.push(row);
                             Ok(())
                         })?;
@@ -202,10 +238,54 @@ impl Value {
     }
 }
 
-pub struct StdoutEncoder(pub encode::Encoder<encode::write::Writer<BufWriter<std::io::StdoutLock<'static>>>>);
+fn fd3_fd() -> Option<BorrowedFd<'static>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static IS_TAKEN: AtomicBool = AtomicBool::new(false);
+    if IS_TAKEN.load(Ordering::SeqCst) {
+        return None;
+    }
+    IS_TAKEN.store(true, Ordering::SeqCst);
+
+    static STDBINOUT: LazyLock<OwnedFd> = LazyLock::new(|| unsafe { OwnedFd::from_raw_fd(3) });
+
+    // SAFETY: we assert that the FD is open right afterwards.
+    if rustix::fs::fcntl_getfl(unsafe { BorrowedFd::borrow_raw(3) }).is_ok() {
+        Some((&*STDBINOUT).as_fd())
+    } else {
+        None
+    }
+}
+
+pub struct Fd3(BorrowedFd<'static>);
+
+impl io::Read for Fd3 {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        Ok(rustix::io::read(self.0, buf)?)
+    }
+}
+
+impl io::Write for Fd3 {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        loop {
+            return match rustix::io::write(self.0, buf) {
+                Err(rustix::io::Errno::AGAIN) => continue,
+                Ok(c) => Ok(c),
+                Err(e) => Err(io::Error::from_raw_os_error(e.raw_os_error())),
+            };
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        _ = self;
+        Ok(())
+    }
+}
+
+pub struct StdoutEncoder(pub encode::Encoder<encode::write::Writer<BufWriter<Fd3>>>);
 
 pub fn stdout_writer() -> StdoutEncoder {
-    let writer = encode::write::Writer::new(BufWriter::new(io::stdout().lock()));
+    let f = Fd3(fd3_fd().unwrap()); // TODO: fallback to stdout
+    let writer = encode::write::Writer::new(BufWriter::new(f));
     StdoutEncoder(encode::Encoder::new(writer))
 }
 
@@ -214,10 +294,10 @@ pub struct StreamingTable<'a, W: encode::Write> {
     width: usize,
 }
 
-impl<W: encode::Write> StreamingTable<'_, W> {
-    pub fn row<R>(&mut self, row: R) -> Result<(), encode::Error<W::Error>>
+impl<'a, W: encode::Write> StreamingTable<'a, W> {
+    pub fn row<'v, R>(&mut self, row: R) -> Result<(), encode::Error<W::Error>>
     where
-        R: IntoIterator<Item = Value>,
+        R: IntoIterator<Item = Value<'v>>,
         R::IntoIter: std::iter::ExactSizeIterator
     {
         let row = row.into_iter();
@@ -243,11 +323,11 @@ impl<W: encode::Write> Drop for StreamingTable<'_, W> {
     }
 }
 
-pub fn stream_table<'a, T, I, W: encode::Write>(e: &'a mut Encoder<W>, headers: I)
+pub fn stream_table<'a, 'v, T, I, W: encode::Write>(e: &'a mut Encoder<W>, headers: I)
     -> Result<StreamingTable<'a, W>, encode::Error<W::Error>>
 where
     I: IntoIterator<Item = T>,
-    T: Into<Value>,
+    T: Into<Value<'v>>,
 {
     e.tag(Tag::new(TABLE_TAG))?;
 

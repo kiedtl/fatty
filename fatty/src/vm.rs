@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use std::os::unix::process::CommandExt as _;
 
 use crate::{ExitReason, Execution};
 use crate::parser::*;
@@ -7,7 +8,7 @@ use crate::{out, outln};
 
 use itertools::Itertools;
 use rustix::process::Pid;
-use rustix::fd::{AsRawFd, OwnedFd, BorrowedFd};
+use rustix::fd::{FromRawFd, AsRawFd, OwnedFd, BorrowedFd};
 use tokio::sync::watch;
 
 // pub enum RunCondition {
@@ -128,7 +129,7 @@ pub struct VM {
 }
 
 impl VM {
-    pub fn execute(&mut self, slave: Option<BorrowedFd<'_>>) {
+    pub fn execute(&mut self, slave: Option<BorrowedFd<'_>>, fd3_slave: Option<BorrowedFd<'_>>) {
         assert!(!self.done);
         assert!(self.waiting_on.is_none());
 
@@ -160,6 +161,9 @@ impl VM {
                     pcmd.stdin(rustix::io::dup(slave).unwrap());
                     pcmd.stdout(rustix::io::dup(slave).unwrap());
                     pcmd.stderr(rustix::io::dup(slave).unwrap());
+                }
+                if let Some(fd3_slave) = fd3_slave {
+                    add_fd3(&mut pcmd, fd3_slave);
                 }
 
                 let child = pcmd.spawn().unwrap();
@@ -242,7 +246,7 @@ impl VM {
                                 Err(_) => unreachable!(),
                             }
                         } else {
-                            vm.execute(None);
+                            vm.execute(None, None);
                         }
                     }
                 });
@@ -283,6 +287,7 @@ impl VM {
     }
 }
 
+#[allow(dead_code)]
 pub fn print_program(p: &[Block]) {
     for (blocki, block) in p.iter().enumerate() {
         println!("Block {blocki}:");
@@ -303,6 +308,29 @@ pub fn print_program(p: &[Block]) {
                 Instr::DoneProgram => println!("  - done"),
             }
         }
+    }
+}
+
+fn add_fd3(cmd: &mut std::process::Command, fd3_slave: BorrowedFd) {
+    let fd3_raw = fd3_slave.as_raw_fd();
+    unsafe {
+        cmd.pre_exec(move || {
+            // Stupid fucking rustix requires an OwnedFd, so use libc.
+            // Skip the dup when it's already 3: dup2(3, 3) is a no-op that, unlike
+            // a real dup, does NOT clear CLOEXEC on the target.
+            if fd3_raw != 3 && libc::dup2(fd3_raw, 3) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Make sure fd 3 survives the exec into the child. dup2 clears CLOEXEC
+            // on its target, but the no-op path above (or a CLOEXEC source) could
+            // leave it set, which would close fd 3 on exec and brandywine couldn't
+            // open it.
+            let flags = libc::fcntl(3, libc::F_GETFD);
+            if flags == -1 || libc::fcntl(3, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
 }
 

@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::Parser;
 use nix::sys::statvfs::statvfs;
 
-use estella::{self, Value};
+use bwine::{self, Value};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -43,8 +43,8 @@ fn run(args: &Cli) -> Result<()> {
             )
         };
 
-        let mut writer = estella::stdout_writer();
-        let mut stt = estella::stream_table(&mut writer.0, ["filesystem", "type", h3, h4, h5, h6, "mountpoint"]).unwrap();
+        let mut writer = bwine::stdout_writer();
+        let mut stt = bwine::stream_table(&mut writer.0, ["filesystem", "type", h3, h4, h5, h6, "mountpoint"]).unwrap();
 
         for m in readmounts()? {
             let Ok(st) = statvfs(m.mountpoint.as_str())

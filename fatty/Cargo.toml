@@ -6,7 +6,7 @@ default-run = "fatty"
 
 [dependencies]
 bitflags = "2.11.0"
-estella = { path = "../estella" }
+brandywine = { path = "../brandywine" }
 futures = "0.3.32"
 #brush-core = "0.4.0"
 glob = "0.3.3"
