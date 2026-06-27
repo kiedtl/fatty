@@ -1,8 +1,9 @@
-use std::path::{Path, PathBuf};
-use std::os::unix::ffi::OsStrExt;
-use std::io::{self, BufWriter};
-use std::ffi::{OsStr, OsString};
 use std::borrow::Cow;
+use std::ffi::{OsStr, OsString};
+use std::fmt;
+use std::io::{self, BufWriter};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use minicbor::data::{Int, Tag, Type};
@@ -12,6 +13,431 @@ use rustix::fd::{OwnedFd, BorrowedFd, FromRawFd, AsFd};
 
 pub const TABLE_TAG: u64 = 0x1FA772010;
 pub const PATH_TAG: u64 = 0x1FA772011;
+
+#[derive(Debug, Clone)]
+pub enum Token<'a> {
+    Int(i128),
+    Path,
+    Bytes,
+    BytesPart(Cow<'a, [u8]>),
+    Text,
+    TextPart(Cow<'a, str>),
+    Array(Option<u64>),
+    Map(Option<u64>),
+    // MapFirst,
+    // MapSecond,
+    Tag(u64),
+
+    Float(f64),
+    Bool(bool),
+    Null,
+    Undefined,
+    Simple(u8),
+
+    Table,
+
+    End,
+}
+
+impl<'a> Token<'a> {
+    pub fn collect(ast: &[Token<'a>]) -> Option<(usize, Value<'static>)> {
+        let Some(head) = ast.first() else { return None };
+
+        Some(match head {
+            Token::Int(i) => (1, Value::Int(*i)),
+            Token::Float(i) => (1, Value::Float(*i)),
+            Token::Bool(i) => (1, Value::Bool(*i)),
+            Token::Simple(i) => (1, Value::Simple(*i)),
+            Token::Null => (1, Value::Null),
+            Token::Undefined => (1, Value::Undefined),
+
+            Token::End | Token::TextPart(_) | Token::BytesPart(_) => return None,
+
+            Token::Text => {
+                let mut s = String::new();
+                let mut i = 1;
+                loop {
+                    match ast.get(i) {
+                        None => return None,
+                        Some(Token::End) => break,
+                        Some(Token::TextPart(p)) => {
+                            i += 1;
+                            s.push_str(&*p);
+                        }
+                        Some(_) => return None,
+                    }
+                }
+                i += 1; // Move past end
+                (i, Value::Text(s.into()))
+            }
+            Token::Path => {
+                let mut s = OsString::new();
+                let mut i = 1;
+                loop {
+                    match ast.get(i) {
+                        None => return None,
+                        Some(Token::End) => break,
+                        Some(Token::BytesPart(p)) => {
+                            i += 1;
+                            s.push(OsStr::from_bytes(&p));
+                        }
+                        Some(_) => return None,
+                    }
+                }
+                i += 1; // Move past end
+                (i, Value::Path(PathBuf::from(s).into()))
+            }
+            Token::Bytes => {
+                let mut s = Vec::new();
+                let mut i = 1;
+                loop {
+                    match ast.get(i) {
+                        None => return None,
+                        Some(Token::End) => break,
+                        Some(Token::BytesPart(p)) => {
+                            i += 1;
+                            s.extend_from_slice(&p);
+                        }
+                        Some(_) => return None,
+                    }
+                }
+                i += 1; // Move past end
+                (i, Value::Bytes(s.into()))
+            }
+
+            Token::Array(_) => {
+                let mut i = 1;
+                let mut v = Vec::new();
+                loop {
+                    match ast.get(i) {
+                        None => return None,
+                        Some(Token::End) => break,
+                        Some(_) => {
+                            let (ns, it) = Self::collect(&ast[i..])?;
+                            i += ns;
+                            v.push(it);
+                        },
+                    }
+                }
+                i += 1; // Move past end
+                (i, Value::Array(v))
+            }
+            Token::Map(_) => todo!(),
+
+            Token::Tag(t) => {
+                let (ns, it) = Self::collect(&ast[1..])?;
+                (1 + ns, Value::Tag(*t, Box::new(it)))
+            }
+
+            Token::Table => todo!(),
+        })
+    }
+
+    // pub fn span(ast: &[Token<'_>]) -> Option<usize> {
+    //     let Some(head) = ast.first() else { return None };
+
+    //     let n = match head {
+    //         // Atomics: a single self-contained token.
+    //         Token::Int(_) | Token::Float(_) | Token::Bool(_)
+    //         | Token::Null | Token::Undefined | Token::Simple(_) => 1,
+
+    //         // Parts only occur inside a value, and `End` only closes one; as a head
+    //         // they're malformed, so consume just the one token to keep callers moving.
+    //         Token::End | Token::TextPart(_) | Token::BytesPart(_) => 1,
+
+    //         // String-likes: opener, parts, through the closing `End`.
+    //         Token::Text | Token::Bytes | Token::Path => {
+    //             let mut i = 1;
+    //             loop {
+    //                 match ast.get(i) {
+    //                     None => return None,
+    //                     Some(Token::End) => break i + 1,
+    //                     Some(_) => i += 1,
+    //                 }
+    //             }
+    //         }
+
+    //         // Composites: opener, values (recursively), through the closing `End`.
+    //         Token::Array(_) | Token::Map(_) => {
+    //             let mut i = 1;
+    //             loop {
+    //                 match ast.get(i) {
+    //                     None => return None,
+    //                     Some(Token::End) => break i + 1,
+    //                     Some(_) => i += token_span(&ast[i..]).len(),
+    //                 }
+    //             }
+    //         }
+
+    //         // A tag wraps exactly one following value.
+    //         Token::Tag(_) => 1 + token_span(&ast[1..]).len(),
+
+    //         // A table is itself plus two values: the header array and the rows array.
+    //         Token::Table => {
+    //             let header = token_span(&ast[1..]).len();
+    //             let rows = token_span(&ast[1 + header..]).len();
+    //             1 + header + rows
+    //         }
+    //     };
+
+    //     Some(n)
+    // }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Expecting {
+    Something,
+    Map(usize, Option<u64>),
+    Array(usize, Option<u64>),
+    TableHeader,
+    TableRows,
+    TableRow(usize),
+    String(usize, Option<u64>),
+    Bytes(usize, Option<u64>),
+}
+
+pub struct StreamingReader{
+    pub stack: Vec<Expecting>,
+}
+
+impl StreamingReader {
+    pub fn new() -> Self {
+        Self {
+            stack: vec![Expecting::Something],
+        }
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.stack.is_empty()
+    }
+
+    pub fn read_once<'a>(&mut self, buf: &'a [u8], ast: &'_ mut Vec<Token<'static>>) -> Result<usize, decode::Error> {
+        let mut d = Decoder::new(buf);
+
+        let Some(&expecting) = self.stack.last()
+            else { return Ok(0) /* done */ };
+
+        fn decode_atomic<'a>(d: &mut Decoder<'a>) -> Result<Option<Token<'static>>, decode::Error> {
+            Ok(match d.datatype()? {
+                Type::U8 | Type::U16 | Type::U32 | Type::U64
+                | Type::I8 | Type::I16 | Type::I32 | Type::I64
+                | Type::Int => Some(Token::Int(d.int()?.into())),
+
+                Type::F16 | Type::F32 | Type::F64 => Some(Token::Float(d.f64()?)),
+                Type::Bool => Some(Token::Bool(d.bool()?)),
+                Type::Null => {
+                    d.null()?;
+                    Some(Token::Null)
+                }
+                Type::Undefined => {
+                    d.undefined()?;
+                    Some(Token::Undefined)
+                }
+                Type::Simple => Some(Token::Simple(d.simple()?)),
+                _ => None,
+            })
+        }
+
+        fn decode_beginner<'a>(d: &mut Decoder<'a>, astlen: usize) -> Result<Option<(Token<'static>, Expecting)>, decode::Error> {
+            Ok(match d.datatype()? {
+                Type::Bytes | Type::BytesIndef => {
+                    Some((Token::Bytes, Expecting::Bytes(astlen, read_len(d)?)))
+                },
+                Type::String | Type::StringIndef => {
+                    Some((Token::Text, Expecting::String(astlen, read_len(d)?)))
+                },
+                Type::Array | Type::ArrayIndef => {
+                    let n = d.array()?;
+                    Some((Token::Array(n), Expecting::Array(astlen, n)))
+                },
+                Type::Map | Type::MapIndef => {
+                    let n = d.map()?;
+                    Some((Token::Map(n), Expecting::Map(astlen, n)))
+                }
+                Type::Tag => {
+                    match d.tag()?.into() {
+                        PATH_TAG => Some((Token::Path, Expecting::Bytes(astlen, read_len(d)?))),
+                        TABLE_TAG => Some((Token::Table, Expecting::TableHeader)),
+                        tag => Some((Token::Tag(tag), Expecting::Something)),
+                    }
+                }
+                _ => None,
+            })
+        }
+
+        fn read_len(d: &mut Decoder<'_>) -> Result<Option<u64>, decode::Error> {
+            let p = d.position();
+            //d.set_position(d.position() + 1);
+            Ok(match read(d)? & 0x1F {
+                31 => None,
+                n => Some(unsigned(d, n, p)?),
+            })
+        }
+
+        fn read(d: &mut Decoder<'_>) -> Result<u8, decode::Error> {
+            if let Some(b) = d.input().get(d.position()) {
+                d.set_position(d.position() + 1);
+                return Ok(*b)
+            }
+            Err(decode::Error::end_of_input())
+        }
+
+        fn read_slice<'b>(d: &mut Decoder<'b>, n: usize) -> Result<&'b [u8], decode::Error> {
+            let p = d.position();
+            if let Some(b) = p.checked_add(n).and_then(|end| d.input().get(p..end)) {
+                d.set_position(p + n);
+                return Ok(b)
+            }
+            Err(decode::Error::end_of_input())
+        }
+
+        fn read_array<'b, const N: usize>(d: &mut Decoder<'b>) -> Result<[u8; N], decode::Error> {
+            read_slice(d, N).map(|s| {
+                let mut a = [0; N];
+                a.copy_from_slice(s);
+                a
+            })
+        }
+
+        fn unsigned(d: &mut Decoder<'_>, b: u8, p: usize) -> Result<u64, decode::Error> {
+            match b {
+                n @ 0 ..= 0x17 => Ok(u64::from(n)),
+                0x18 => read(d).map(u64::from),
+                0x19 => read_array(d).map(u16::from_be_bytes).map(u64::from),
+                0x1a => read_array(d).map(u32::from_be_bytes).map(u64::from),
+                0x1b => read_array(d).map(u64::from_be_bytes),
+                _    => Err(decode::Error::type_mismatch(Type::Break).with_message("expected u64").at(p)),
+            }
+        }
+
+        fn current(d: &Decoder<'_>) -> Result<u8, decode::Error> {
+            if let Some(b) = d.input().get(d.position()) {
+                return Ok(*b)
+            }
+            Err(decode::Error::end_of_input())
+        }
+
+        match expecting {
+            Expecting::Array(_, Some(0)) => {
+                ast.push(Token::End);
+                self.stack.pop();
+            }
+            Expecting::Array(i, Some(num)) => {
+                let aexp = Expecting::Array(i, Some(num - 1));
+                if let Some(token) = decode_atomic(&mut d)? {
+                    ast.push(token);
+                    self.stack.pop();
+                    self.stack.push(aexp);
+                } else if let Some((btok, exp)) = decode_beginner(&mut d, ast.len())? {
+                    ast.push(btok);
+                    self.stack.pop();
+                    self.stack.push(aexp);
+                    self.stack.push(exp);
+                } else {
+                    unreachable!();
+                }
+            }
+            Expecting::Array(_, None) => {
+                if let Type::Break = d.datatype()? {
+                    d.skip()?;
+                    ast.push(Token::End);
+                    self.stack.pop();
+                } else {
+                    if let Some(token) = decode_atomic(&mut d)? {
+                        ast.push(token);
+                    } else if let Some((btok, exp)) = decode_beginner(&mut d, ast.len())? {
+                        ast.push(btok);
+                        self.stack.push(exp);
+                    } else {
+                        unreachable!();
+                    }
+                }
+            },
+            Expecting::TableHeader => {
+                if let Some((bt @ Token::Array(_), exp)) = decode_beginner(&mut d, ast.len())? {
+                    ast.push(bt);
+                    self.stack.pop();
+                    self.stack.push(Expecting::TableRows);
+                    self.stack.push(exp);
+                } else {
+                    panic!("expected table header (an array)");
+                }
+            },
+            Expecting::TableRows => {
+                if let Some((bt @ Token::Array(_), exp)) = decode_beginner(&mut d, ast.len())? {
+                    ast.push(bt);
+                    self.stack.pop();
+                    self.stack.push(exp);
+                } else {
+                    panic!("expected table rows (an array)");
+                }
+            },
+            Expecting::TableRow(_) => {
+                if let Some((bt @ Token::Array(_), exp)) = decode_beginner(&mut d, ast.len())? {
+                    ast.push(bt);
+                    self.stack.pop();
+                    self.stack.push(exp);
+                } else {
+                    panic!("expected single table row (an array)");
+                }
+            },
+            Expecting::String(_, num) => {
+                match num {
+                    None => match current(&mut d)? {
+                        0xFF => {
+                            _ = read(&mut d)?;
+                            ast.push(Token::End);
+                            self.stack.pop();
+                        },
+                        _ => ast.push(Token::TextPart(d.str()?.to_string().into())),
+                    },
+                    Some(n) => {
+                        ast.push(Token::TextPart(
+                                str::from_utf8(read_slice(&mut d, n as _)?)
+                                    .map_err(|_| todo!())? // Error::utf8 is private; TODO: add our own error
+                                    .to_string()
+                                    .into()
+                        ));
+                        ast.push(Token::End);
+                        self.stack.pop();
+                    }
+                }
+            },
+            Expecting::Bytes(_, num) => {
+                match num {
+                    None => match current(&mut d)? {
+                        0xFF => {
+                            _ = read(&mut d)?;
+                            ast.push(Token::End);
+                            self.stack.pop();
+                        },
+                        _ => ast.push(Token::BytesPart(d.bytes()?.to_vec().into())),
+                    },
+                    Some(n) => {
+                        ast.push(Token::BytesPart(read_slice(&mut d, n as _)?.to_vec().into()));
+                        ast.push(Token::End);
+                        self.stack.pop();
+                    }
+                }
+            },
+            Expecting::Map(_, _) => todo!(),
+            Expecting::Something => {
+                if let Some(token) = decode_atomic(&mut d)? {
+                    ast.push(token);
+                    self.stack.pop();
+                } else if let Some((btok, exp)) = decode_beginner(&mut d, ast.len())? {
+                    ast.push(btok);
+                    self.stack.pop();
+                    self.stack.push(exp);
+                } else {
+                    unreachable!();
+                }
+            },
+        }
+
+        Ok(d.position())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
@@ -66,71 +492,9 @@ impl From<&'static str> for Value<'static> { fn from(s: &'static str) -> Value<'
 //     }
 // }
 
-impl<'a> Value<'a> {
-    pub fn text(value: impl Into<Cow<'static, str>>) -> Self {
-        Value::Text(value.into())
-    }
 
-    pub fn write<W: encode::Write>(&self, e: &mut Encoder<W>)
-        -> Result<(), encode::Error<W::Error>>
-    {
-        match self {
-            Value::Path(p) => {
-                e.tag(Tag::new(PATH_TAG))?;
-                e.bytes(p.as_os_str().as_bytes())?;
-            }
-            Value::Int(x) => {
-                let n = Int::try_from(*x)
-                    // TODO: Outside CBOR range, need bignum tag
-                    .unwrap();
-                e.int(n)?;
-            }
-            Value::Bytes(b) => _ = e.bytes(b)?,
-            Value::Text(s)  => _ = e.str(&*s)?,
-            Value::Array(items) => {
-                e.array(items.len() as u64)?;
-                for it in items {
-                    it.write(e)?;
-                }
-            }
-            Value::Map(pairs) => {
-                e.map(pairs.len() as u64)?;
-                for (k, val) in pairs {
-                    k.write(e)?;
-                    val.write(e)?;
-                }
-            }
-            Value::Tag(tag, inner) => {
-                e.tag(Tag::new(*tag))?;
-                inner.write(e)?;
-            }
-            Value::Float(f) => _ = e.f64(*f)?,
-            Value::Bool(b) => _ = e.bool(*b)?,
-            Value::Null => _ = e.null()?,
-            Value::Undefined => _ = e.undefined()?,
-            Value::Simple(n) => _ = e.simple(*n)?,
-
-            Value::Table { header, rows } => {
-                e.tag(Tag::new(TABLE_TAG))?;
-
-                e.array(header.len() as _)?;
-                for item in header {
-                    item.write(e)?;
-                }
-
-                e.array(rows.len() as _)?;
-                for row in rows {
-                    e.array(row.len() as _)?;
-                    for item in row {
-                        item.write(e)?;
-                    }
-                }
-            },
-        }
-        Ok(())
-    }
-
-    pub fn read(d: &mut Decoder) -> Result<Value<'static>, minicbor::decode::Error> {
+impl<'b> decode::Decode<'b, ()> for Value<'static> {
+    fn decode(d: &mut Decoder<'b>, _ctx: &mut ()) -> Result<Value<'static>, decode::Error> {
         fn read_chunks_osstring(d: &mut Decoder) -> Result<OsString, minicbor::decode::Error> {
             let mut buf = OsString::new();
             for chunk in d.bytes_iter()? {
@@ -238,13 +602,142 @@ impl<'a> Value<'a> {
     }
 }
 
-fn fd3_fd() -> Option<BorrowedFd<'static>> {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static IS_TAKEN: AtomicBool = AtomicBool::new(false);
-    if IS_TAKEN.load(Ordering::SeqCst) {
-        return None;
+impl fmt::Display for Value<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Path(p) => write!(f, "{}", p.display()),
+            Value::Text(s)  => write!(f, "{}", &*s),
+            Value::Int(x) => write!(f, "{x}"),
+            Value::Float(x) => write!(f, "{x}"),
+            Value::Bool(x) => write!(f, "{x}"),
+            Value::Simple(x) => write!(f, "{x}"),
+            Value::Bytes(_) => write!(f, "<bytes>"),
+            Value::Table { .. } => write!(f, "<table>"),
+            Value::Null => write!(f, "<nil>"),
+            Value::Undefined => write!(f, "<undefined>"),
+            Value::Array(_) => write!(f, "<array>"),
+            Value::Map(_) => write!(f, "<map>"),
+            Value::Tag(_, _) => write!(f, "<tagged>"),
+        }
     }
-    IS_TAKEN.store(true, Ordering::SeqCst);
+}
+
+impl<'a> Value<'a> {
+    pub fn text(value: impl Into<Cow<'static, str>>) -> Self {
+        Value::Text(value.into())
+    }
+
+    pub fn write<W: encode::Write>(&self, e: &mut Encoder<W>)
+        -> Result<(), encode::Error<W::Error>>
+    {
+        match self {
+            Value::Path(p) => {
+                e.tag(Tag::new(PATH_TAG))?;
+                e.bytes(p.as_os_str().as_bytes())?;
+            }
+            Value::Int(x) => {
+                let n = Int::try_from(*x)
+                    // TODO: Outside CBOR range, need bignum tag
+                    .unwrap();
+                e.int(n)?;
+            }
+            Value::Bytes(b) => _ = e.bytes(b)?,
+            Value::Text(s)  => _ = e.str(&*s)?,
+            Value::Array(items) => {
+                e.array(items.len() as u64)?;
+                for it in items {
+                    it.write(e)?;
+                }
+            }
+            Value::Map(pairs) => {
+                e.map(pairs.len() as u64)?;
+                for (k, val) in pairs {
+                    k.write(e)?;
+                    val.write(e)?;
+                }
+            }
+            Value::Tag(tag, inner) => {
+                e.tag(Tag::new(*tag))?;
+                inner.write(e)?;
+            }
+            Value::Float(f) => _ = e.f64(*f)?,
+            Value::Bool(b) => _ = e.bool(*b)?,
+            Value::Null => _ = e.null()?,
+            Value::Undefined => _ = e.undefined()?,
+            Value::Simple(n) => _ = e.simple(*n)?,
+
+            Value::Table { header, rows } => {
+                e.tag(Tag::new(TABLE_TAG))?;
+
+                e.array(header.len() as _)?;
+                for item in header {
+                    item.write(e)?;
+                }
+
+                e.array(rows.len() as _)?;
+                for row in rows {
+                    e.array(row.len() as _)?;
+                    for item in row {
+                        item.write(e)?;
+                    }
+                }
+            },
+        }
+        Ok(())
+    }
+
+    pub fn read(d: &mut Decoder) -> Result<Value<'static>, minicbor::decode::Error> {
+        d.decode::<Value>()
+    }
+
+    pub fn try_read(d: &mut Decoder) -> Result<Value<'static>, minicbor::decode::Error> {
+        let p = d.position();
+        match d.decode::<Value>() {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                d.set_position(p);
+                Err(e)
+            }
+        }
+    }
+}
+
+fn fd4_fd() -> Option<BorrowedFd<'static>> {
+
+    // SAFETY: we assert that the FD is open right afterwards.
+    if rustix::fs::fcntl_getfl(unsafe { BorrowedFd::borrow_raw(4) }).is_ok() {
+        static STDBININ: LazyLock<OwnedFd> = LazyLock::new(|| unsafe { OwnedFd::from_raw_fd(4) });
+        Some((&*STDBININ).as_fd())
+    } else if rustix::fs::fcntl_getfl(unsafe { BorrowedFd::borrow_raw(0) }).is_ok() {
+        // silly
+        static STDIN: LazyLock<OwnedFd> = LazyLock::new(|| unsafe { OwnedFd::from_raw_fd(0) });
+        Some((&*STDIN).as_fd())
+    } else {
+        None
+    }
+}
+
+pub struct Fd4(BorrowedFd<'static>);
+
+impl Fd4 {
+    pub fn acquire() -> Option<Self> {
+        Some(Fd4(fd4_fd()?))
+    }
+}
+
+impl io::Read for Fd4 {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        Ok(rustix::io::read(self.0, buf)?)
+    }
+}
+
+fn fd3_fd() -> Option<BorrowedFd<'static>> {
+    // use std::sync::atomic::{AtomicBool, Ordering};
+    // static IS_TAKEN: AtomicBool = AtomicBool::new(false);
+    // if IS_TAKEN.load(Ordering::SeqCst) {
+    //     return None;
+    // }
+    // IS_TAKEN.store(true, Ordering::SeqCst);
 
     static STDBINOUT: LazyLock<OwnedFd> = LazyLock::new(|| unsafe { OwnedFd::from_raw_fd(3) });
 
@@ -257,12 +750,6 @@ fn fd3_fd() -> Option<BorrowedFd<'static>> {
 }
 
 pub struct Fd3(BorrowedFd<'static>);
-
-impl io::Read for Fd3 {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        Ok(rustix::io::read(self.0, buf)?)
-    }
-}
 
 impl io::Write for Fd3 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {

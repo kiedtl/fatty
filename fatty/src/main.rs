@@ -109,7 +109,14 @@ pub struct Execution {
 
 impl Execution {
     pub fn new(string: String, vm: vm::VM, width: usize) -> Execution {
-        let (fd3_master, fd3_slave) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::NONBLOCK).unwrap();
+        //let (fd3_master, fd3_slave) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::NONBLOCK).unwrap();
+        // Unix socket for bidi communication.. bad idea?
+        let (fd3_master, fd3_slave) = rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::STREAM,
+            rustix::net::SocketFlags::NONBLOCK,
+            None,
+        ).unwrap();
         Execution {
             fd3_master, fd3_slave,
             string, vm,
@@ -231,6 +238,9 @@ impl App {
         ).unwrap();
         set_pty_output(&pty.controller);
 
+        let mut env: HashMap<_, _> = std::env::vars_os().collect();
+        env.insert("FATTY".into(), "normal0".into());
+
         (
             Self {
                 control_state: ControlState::Normal,
@@ -244,10 +254,9 @@ impl App {
                 theme: styles::Theme::gruvbox(),
                 //shell: Arc::new(TokioMutex::new(shell)),
                 vwidth: cell::Cell::new(None),
-                env: std::env::vars_os().collect(),
+                env,
             },
             iced::font::set_defaults(iced::Font::new("Atkinson Hyperlegible Next"), 16.),
-            //open.map(|_| Message::None)
         )
     }
 
@@ -291,6 +300,7 @@ impl App {
                         self.execs.push(Execution::new(
                             string,
                             vm::VM {
+                                env: Arc::new(self.env.clone()),
                                 program: Arc::new(program),
                                 pc: (0, None),
                                 waiting_on: None,

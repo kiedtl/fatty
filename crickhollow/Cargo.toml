@@ -12,3 +12,4 @@ libc = "0.2.184"
 nix = { version = "0.31", features = ["fs", "user"] }
 rayon = "1.11"
 rustix = "1.1.4"
+tabled = "0.21.0"

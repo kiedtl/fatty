@@ -84,25 +84,37 @@ fn run(args: &Cli) -> Result<()> {
         };
 
     let (tx, rx) = mpsc::channel::<Dp>();
-    let mut bw = bwine::stdout_writer();
-    let mut stt = bwine::stream_table(&mut bw.0, ["size", "path"])?;
-    let mut gt = 0u64;
     let seen = DashSet::<(u64, u64)>::new();
+    let mut gt = 0u64;
 
-    for p in paths {
-        gt += du(p, &opts, 0, &seen, tx.clone());
-        while let Ok(Dp(value, path)) = rx.try_recv() {
-            stt.row([Value::from(value), Value::Path(path.as_path().into())])?;
-            // println!("{}\t{}", Vs { value, opts: &opts }, path.display());
+    if std::env::var_os("FATTY").is_some() {
+        let mut bw = bwine::stdout_writer();
+        let mut stt = bwine::stream_table(&mut bw.0, ["size", "path"])?;
+
+        for p in paths {
+            gt += du(p, &opts, 0, &seen, tx.clone());
+            while let Ok(Dp(value, path)) = rx.try_recv() {
+                stt.row([Value::from(value), Value::Path(path.as_path().into())])?;
+            }
+        }
+
+        if args.total {
+            stt.row([Value::from(gt), Value::Null])?;
+        }
+
+        stt.end();
+    } else {
+        for p in paths {
+            gt += du(p, &opts, 0, &seen, tx.clone());
+            while let Ok(Dp(value, path)) = rx.try_recv() {
+                println!("{}\t{}", Vs { value, opts: &opts }, path.display());
+            }
+        }
+
+        if args.total {
+            println!("{}\ttotal", Vs { value: gt, opts: &opts });
         }
     }
-
-    if args.total {
-        stt.row([Value::from(gt), Value::Null])?;
-        // println!("{}\ttotal", Vs { value: gt, opts: &opts });
-    }
-
-    stt.end();
 
     Ok(())
 }
@@ -194,7 +206,6 @@ fn emit(total: u64, path: &Path, meta: &Metadata, opts: &Opts, depth: usize, tx:
         }
     }
 
-    //println!("{}\t{}", Vs { value: total }, path.display());
     tx.send(Dp(total, path.to_path_buf())).unwrap();
 }
 

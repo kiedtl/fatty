@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 use std::os::unix::process::CommandExt as _;
+use std::ffi::OsString;
+use std::collections::HashMap;
 
 use crate::{ExitReason, Execution};
 use crate::parser::*;
@@ -8,7 +10,7 @@ use crate::{out, outln};
 
 use itertools::Itertools;
 use rustix::process::Pid;
-use rustix::fd::{FromRawFd, AsRawFd, OwnedFd, BorrowedFd};
+use rustix::fd::{FromRawFd, AsFd, AsRawFd, OwnedFd, BorrowedFd};
 use tokio::sync::watch;
 
 // pub enum RunCondition {
@@ -119,6 +121,7 @@ pub enum VMStatus {
 }
 
 pub struct VM {
+    pub env: Arc<HashMap<OsString, OsString>>,
     pub program: Arc<Vec<Block>>,
     pub pc: (usize, Option<usize>),
     pub waiting_on: Option<Pid>,
@@ -129,7 +132,7 @@ pub struct VM {
 }
 
 impl VM {
-    pub fn execute(&mut self, slave: Option<BorrowedFd<'_>>, fd3_slave: Option<BorrowedFd<'_>>) {
+    pub fn execute(&mut self, slave: Option<BorrowedFd<'_>>, slave_obj: Option<BorrowedFd<'_>>) {
         assert!(!self.done);
         assert!(self.waiting_on.is_none());
 
@@ -156,14 +159,15 @@ impl VM {
             Instr::Run { command } => {
                 let (cmd, args) = prepare_invocation(&command.argv);
                 let mut pcmd = std::process::Command::new(&cmd);
+                pcmd.envs(&*self.env);
                 pcmd.args(args);
                 if let Some(slave) = slave {
                     pcmd.stdin(rustix::io::dup(slave).unwrap());
                     pcmd.stdout(rustix::io::dup(slave).unwrap());
                     pcmd.stderr(rustix::io::dup(slave).unwrap());
                 }
-                if let Some(fd3_slave) = fd3_slave {
-                    add_fd3(&mut pcmd, fd3_slave);
+                if let Some(slave_obj) = slave_obj {
+                    add_stdobjout(&mut pcmd, slave_obj);
                 }
 
                 let child = pcmd.spawn().unwrap();
@@ -179,19 +183,34 @@ impl VM {
                 let mut reader;
                 let mut next_reader = None;
                 let mut writer = None;
+
+                let mut reader_obj;
+                let mut next_reader_obj = None;
+                let mut writer_obj = None;
+
                 let mut last_pid = None;
 
                 for (i, command) in commands.iter().enumerate() {
+                    let mut keep = Vec::<OwnedFd>::new();
                     reader = next_reader;
                     next_reader = None;
+
+                    reader_obj = next_reader_obj;
+                    next_reader_obj = None;
+
                     if i < commands.len() - 1 {
                         let (fr, fw) = std::io::pipe().unwrap();
                         next_reader = Some(fr);
                         writer = Some(fw);
+
+                        let (fr_obj, fw_obj) = std::io::pipe().unwrap();
+                        next_reader_obj = Some(fr_obj);
+                        writer_obj = Some(fw_obj);
                     }
 
                     let (cmd, args) = prepare_invocation(&command.argv);
                     let mut command = std::process::Command::new(cmd);
+                    command.envs(&*self.env);
                     command.args(args);
 
                     if let Some(writer) = writer.take() {
@@ -200,10 +219,24 @@ impl VM {
                         command.stdout(rustix::io::dup(slave).unwrap());
                     }
 
+                    if let Some(writer_obj) = writer_obj.take() {
+                        add_stdobjout(&mut command, writer_obj.as_fd());
+                        keep.push(writer_obj.into());
+                    } else if let Some(slave_obj) = slave_obj {
+                        add_stdobjout(&mut command, slave_obj.as_fd());
+                    }
+
                     if let Some(reader) = reader {
                         command.stdin(reader);
                     } else if let Some(slave) = slave {
                         command.stdin(rustix::io::dup(slave).unwrap());
+                    }
+
+                    if let Some(reader_obj) = reader_obj {
+                        add_stdobjin(&mut command, reader_obj.as_fd());
+                        keep.push(reader_obj.into());
+                    } else if let Some(slave_obj) = slave_obj {
+                        add_stdobjin(&mut command, slave_obj.as_fd());
                     }
 
                     if let Some(slave) = slave {
@@ -212,6 +245,7 @@ impl VM {
 
                     let child = command.spawn().unwrap();
                     last_pid = Some(Pid::from_child(&child));
+                    std::mem::drop(keep);
                 }
 
                 self.waiting_on = last_pid;
@@ -226,6 +260,7 @@ impl VM {
                 let (tx, rx) = watch::channel(VMStatus::default());
 
                 let mut vm = VM {
+                    env: self.env.clone(),
                     program: self.program.clone(),
                     pc: (*block, None),
                     waiting_on: None,
@@ -311,26 +346,35 @@ pub fn print_program(p: &[Block]) {
     }
 }
 
-fn add_fd3(cmd: &mut std::process::Command, fd3_slave: BorrowedFd) {
+unsafe fn safe_dup_nocloexec(fdno: i32, to: i32) -> std::io::Result<()> {
+    unsafe {
+        if fdno == to {
+            // fd is already TO, clear CLOEXEC
+            let flags = libc::fcntl(to, libc::F_GETFD);
+            if flags == -1 || libc::fcntl(to, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+        } else {
+            // Silly rustix requires an OwnedFd, so use libc.
+            if libc::dup2(fdno, to) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn add_stdobjin(cmd: &mut std::process::Command, fd3_slave: BorrowedFd) {
     let fd3_raw = fd3_slave.as_raw_fd();
     unsafe {
-        cmd.pre_exec(move || {
-            // Stupid fucking rustix requires an OwnedFd, so use libc.
-            // Skip the dup when it's already 3: dup2(3, 3) is a no-op that, unlike
-            // a real dup, does NOT clear CLOEXEC on the target.
-            if fd3_raw != 3 && libc::dup2(fd3_raw, 3) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            // Make sure fd 3 survives the exec into the child. dup2 clears CLOEXEC
-            // on its target, but the no-op path above (or a CLOEXEC source) could
-            // leave it set, which would close fd 3 on exec and brandywine couldn't
-            // open it.
-            let flags = libc::fcntl(3, libc::F_GETFD);
-            if flags == -1 || libc::fcntl(3, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+        cmd.pre_exec(move || safe_dup_nocloexec(fd3_raw, 4));
+    }
+}
+
+fn add_stdobjout(cmd: &mut std::process::Command, fd3_slave: BorrowedFd) {
+    let fd3_raw = fd3_slave.as_raw_fd();
+    unsafe {
+        cmd.pre_exec(move || safe_dup_nocloexec(fd3_raw, 3));
     }
 }
 

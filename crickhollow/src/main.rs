@@ -5,6 +5,7 @@ mod bolger;
 mod cp;
 mod df;
 mod du;
+mod max;
 mod ps;
 
 fn main() {
@@ -15,6 +16,7 @@ fn main() {
             Some(f) if f == OsStr::new("df") => df::main(),
             Some(f) if f == OsStr::new("du") => du::main(),
             Some(f) if f == OsStr::new("ps") => ps::main(),
+            Some(f) if f == OsStr::new("max") => max::main(),
             Some(f) => eprintln!("Unknown file {f:?}."),
             None => eprintln!("Need argv[0]"),
         }
