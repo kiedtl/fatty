@@ -28,10 +28,10 @@ use iced::{
 };
 
 use crate::styles::Theme as MyTheme;
-use crate::ControlState;
+use crate::ControlMode;
 
 pub fn input<'a, Message, Theme, Renderer>(
-    control_state: ControlState,
+    mode: ControlMode,
     placeholder: &str,
     value: &str,
 ) -> TextInput<'a, Message, Theme, Renderer>
@@ -40,7 +40,7 @@ where
     Theme: Catalog + 'a,
     Renderer: text::Renderer,
 {
-    TextInput::new(control_state, placeholder, value)
+    TextInput::new(mode, placeholder, value)
 }
 
 /// A field that can be filled with text.
@@ -49,7 +49,7 @@ where
     Theme: Catalog,
     Renderer: text::Renderer,
 {
-    control_state: ControlState,
+    mode: ControlMode,
     id: Option<widget::Id>,
     placeholder: String,
     value: Value,
@@ -78,9 +78,9 @@ where
 {
     /// Creates a new [`TextInput`] with the given placeholder and
     /// its current value.
-    pub fn new(control_state: ControlState, placeholder: &str, value: &str) -> Self {
+    pub fn new(mode: ControlMode, placeholder: &str, value: &str) -> Self {
         TextInput {
-            control_state,
+            mode,
             id: None,
             placeholder: String::from(placeholder),
             value: Value::new(value),
@@ -302,45 +302,45 @@ where
         }
     }
 
-    fn input_method<'b>(
-        &self,
-        state: &'b State<Renderer::Paragraph>,
-        layout: Layout<'_>,
-        value: &Value,
-    ) -> InputMethod<&'b str> {
-        let Some(Focus {
-            is_window_focused: true,
-            ..
-        }) = &state.is_focused
-        else {
-            return InputMethod::Disabled;
-        };
+    // fn input_method<'b>(
+    //     &self,
+    //     state: &'b State<Renderer::Paragraph>,
+    //     layout: Layout<'_>,
+    //     value: &Value,
+    // ) -> InputMethod<&'b str> {
+    //     let Some(Focus {
+    //         is_window_focused: true,
+    //         ..
+    //     }) = &state.is_focused
+    //     else {
+    //         return InputMethod::Disabled;
+    //     };
 
-        let text_bounds = layout.children().next().unwrap().bounds();
+    //     let text_bounds = layout.children().next().unwrap().bounds();
 
-        let caret_index = match state.cursor.state(value) {
-            CursorState::Index(position) => position,
-            CursorState::Selection { start, end } => start.min(end),
-        };
+    //     let caret_index = match state.cursor.state(value) {
+    //         CursorState::Index(position) => position,
+    //         CursorState::Selection { start, end } => start.min(end),
+    //     };
 
-        let text = state.value.raw();
-        let (cursor_x, scroll_offset) =
-            measure_cursor_and_scroll_offset(text, text_bounds, caret_index);
+    //     let text = state.value.raw();
+    //     let (cursor_x, scroll_offset) =
+    //         measure_cursor_and_scroll_offset(text, text_bounds, caret_index);
 
-        let alignment_offset =
-            alignment_offset(text_bounds.width, text.min_width(), self.alignment);
+    //     let alignment_offset =
+    //         alignment_offset(text_bounds.width, text.min_width(), self.alignment);
 
-        let x = (text_bounds.x + cursor_x).floor() - scroll_offset + alignment_offset;
+    //     let x = (text_bounds.x + cursor_x).floor() - scroll_offset + alignment_offset;
 
-        InputMethod::Enabled {
-            cursor: Rectangle::new(
-                Point::new(x, text_bounds.y),
-                Size::new(1.0, text_bounds.height),
-            ),
-            purpose: input_method::Purpose::Normal,
-            preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
-        }
-    }
+    //     InputMethod::Enabled {
+    //         cursor: Rectangle::new(
+    //             Point::new(x, text_bounds.y),
+    //             Size::new(1.0, text_bounds.height),
+    //         ),
+    //         purpose: input_method::Purpose::Normal,
+    //         preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
+    //     }
+    // }
 
     /// Draws the [`TextInput`] with the given [`Renderer`], overriding its
     /// [`Value`] if provided.
@@ -401,7 +401,7 @@ where
             radius: (2.).into(),
         };
 
-        let (cursor, offset, is_selecting) = if let Some(focus) = state
+        let (cursor, offset, is_selecting) = if let Some(_focus) = state
             .is_focused
             .as_ref()
             .filter(|focus| focus.is_window_focused)
@@ -413,7 +413,7 @@ where
                     let (text_value_width_n1, _offset_n1) =
                         measure_cursor_and_scroll_offset(state.value.raw(), text_bounds, position + 1);
 
-                    let width = if self.control_state == ControlState::Insert {
+                    let width = if self.mode == ControlMode::Insert {
                         if renderer::CRISP {
                             (1.0 / renderer.scale_factor().unwrap_or(1.0)).max(1.0)
                         } else {
@@ -720,8 +720,8 @@ where
                 let Some(focus) = &mut state.is_focused 
                     else { return; };
 
-                match self.control_state {
-                    ControlState::Normal => {
+                match self.mode {
+                    ControlMode::Normal => {
                         match (state.keyboard_modifiers, modified_key.to_latin(*physical_key)) {
                             (Modifiers::NONE,  Some('h')) => state.cursor.move_left(&self.value),
                             (Modifiers::NONE,  Some('b')) => state.cursor.move_left_by_words(&self.value),
@@ -732,7 +732,7 @@ where
                             _ => (),
                         }
                     },
-                    ControlState::Insert => {
+                    ControlMode::Insert => {
                         match key.to_latin(*physical_key) {
                             Some('c') if state.keyboard_modifiers.command() => {
                                 if let Some((start, end)) = state.cursor.selection(&self.value) {
@@ -1111,7 +1111,7 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::<Renderer::Paragraph>::new(self.control_state))
+        tree::State::new(State::<Renderer::Paragraph>::new(self.mode))
     }
 
     fn diff(&self, tree: &mut Tree) {
@@ -1176,7 +1176,7 @@ where
             Status::Disabled
         } else if state.is_focused() {
             Status::Focused {
-                is_hovered: self.control_state == ControlState::Insert, //cursor.is_over(layout.bounds()),
+                is_hovered: self.mode == ControlMode::Insert, //cursor.is_over(layout.bounds()),
             }
         } else if cursor.is_over(layout.bounds()) {
             Status::Hovered
@@ -1308,9 +1308,9 @@ enum Paste {
 }
 
 impl<P: text::Paragraph> State<P> {
-    pub fn new(cstate: ControlState) -> Self {
+    pub fn new(cstate: ControlMode) -> Self {
         let is_focused = match cstate {
-            ControlState::Normal | ControlState::Insert => {
+            ControlMode::Normal | ControlMode::Insert => {
                 let now = Instant::now();
                 Some(Focus {
                     updated_at: now,

@@ -1,5 +1,5 @@
 // TODO: remove container attributes (eg max_height) and put in sensible defaults for simplification.
-use crate::ControlState;
+use crate::{ControlState, ControlMode, ControlMessage};
 
 use iced::advanced::widget::operation::Operation;
 use iced::advanced::widget::tree::{self, Tree};
@@ -14,11 +14,11 @@ use iced::{
 };
 
 pub fn controller<'a, Message, Renderer: advanced::Renderer>(
-    state: ControlState,
-    on_control_state_change: impl Fn(ControlState) -> Message + 'static,
+    state: &'a ControlState,
+    control_message: impl Fn(ControlMessage) -> Message + 'static,
     content: impl Into<Element<'a, Message, crate::styles::Theme, Renderer>>,
 ) -> Controller<'a, Message, Renderer> {
-    Controller::new(state, content, Box::new(on_control_state_change))
+    Controller::new(state, content, Box::new(control_message))
 }
 
 #[allow(missing_debug_implementations)]
@@ -26,8 +26,7 @@ pub struct Controller<'a, Message, Renderer = iced::Renderer>
 where
     Renderer: advanced::Renderer,
 {
-    state: ControlState,
-    id: Option<Id>,
+    state: &'a ControlState,
     width: Length,
     height: Length,
     max_width: f32,
@@ -36,14 +35,14 @@ where
     align_y: alignment::Vertical,
     clip: bool,
     content: Element<'a, Message, crate::styles::Theme, Renderer>,
-    on_control_state_change: Box<dyn Fn(ControlState) -> Message>,
+    control_message: Box<dyn Fn(ControlMessage) -> Message>,
 }
 
 impl<'a, Message, Renderer: advanced::Renderer> Controller<'a, Message, Renderer> {
     pub fn new<T>(
-        state: ControlState,
+        state: &'a ControlState,
         content: T,
-        on_control_state_change: Box<dyn Fn(ControlState) -> Message>,
+        control_message: Box<dyn Fn(ControlMessage) -> Message>,
     ) -> Self
     where
         T: Into<Element<'a, Message, crate::styles::Theme, Renderer>>,
@@ -53,7 +52,6 @@ impl<'a, Message, Renderer: advanced::Renderer> Controller<'a, Message, Renderer
 
         Controller {
             state,
-            id: None,
             width: size.width.fluid(),
             height: size.height.fluid(),
             max_width: f32::INFINITY,
@@ -62,13 +60,8 @@ impl<'a, Message, Renderer: advanced::Renderer> Controller<'a, Message, Renderer
             align_y: alignment::Vertical::Top,
             clip: false,
             content,
-            on_control_state_change,
+            control_message,
         }
-    }
-
-    pub fn id(mut self, id: Id) -> Self {
-        self.id = Some(id);
-        self
     }
 
     pub fn width(mut self, width: impl Into<Length>) -> Self {
@@ -114,6 +107,10 @@ impl<'a, Message, Renderer: advanced::Renderer> Controller<'a, Message, Renderer
     pub fn clip(mut self, clip: bool) -> Self {
         self.clip = clip;
         self
+    }
+
+    fn send(&self, shell: &mut Shell<'_, Message>, m: ControlMessage) {
+        shell.publish((self.control_message)(m));
     }
 }
 
@@ -170,7 +167,7 @@ where
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(self.id.as_ref().map(|id| &id.0), layout.bounds());
+        operation.container(None, layout.bounds());
         operation.traverse(
             &mut |operation| {
                 self.content.as_widget_mut().operate(
@@ -197,7 +194,7 @@ where
             Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(key), modifiers, .. }) => {
                 match (self.state, *modifiers, key) {
                     (_, Modifiers::NONE, Named::Escape) => {
-                        shell.publish((self.on_control_state_change)(ControlState::Normal));
+                        self.send(shell, ControlMessage::ChangeMode(ControlMode::Normal));
                         return;
                     },
                     _ => (),
@@ -205,9 +202,17 @@ where
             },
             Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(key), modifiers, physical_key, .. }) => {
                 let lkey = Key::Character(key.clone()).to_latin(*physical_key);
-                match (self.state, *modifiers, lkey) {
-                    (ControlState::Normal, Modifiers::NONE, Some('i')) => {
-                        shell.publish((self.on_control_state_change)(ControlState::Insert));
+                match (self.state.mode, *modifiers, lkey) {
+                    (ControlMode::Normal, Modifiers::NONE, Some('k')) => {
+                        self.send(shell, ControlMessage::HistoryUp);
+                        return;
+                    },
+                    (ControlMode::Normal, Modifiers::NONE, Some('j')) => {
+                        self.send(shell, ControlMessage::HistoryDown);
+                        return;
+                    },
+                    (ControlMode::Normal, Modifiers::NONE, Some('i')) => {
+                        self.send(shell, ControlMessage::ChangeMode(ControlMode::Insert));
                         return;
                     },
                     _ => (),
@@ -292,30 +297,32 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Id(widget::Id);
+pub fn update(app: &mut crate::App, message: ControlMessage) -> iced::Task<crate::Message> {
+    use ControlMessage as CM;
 
-impl Id {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(widget::Id::from(id.into()))
+    match message {
+        CM::ChangeMode(s) => app.control.mode = s,
+        CM::HistoryUp => if app.execs.len() >= 1 {
+            let hc = app.control.history_cursor.unwrap_or(app.execs.len());
+            let hc = hc.saturating_sub(1);
+            if Some(hc) != app.control.history_cursor {
+                app.control.history_cursor = Some(hc);
+                app.input = app.execs[hc].cmdline.clone();
+            }
+        },
+        CM::HistoryDown => if app.execs.len() >= 1 {
+            let hc = app.control.history_cursor.unwrap_or(app.execs.len() - 1);
+            let hc = if hc + 1 == app.execs.len() { None } else { Some(hc + 1) };
+            if hc != app.control.history_cursor {
+                app.control.history_cursor = hc;
+                if let Some(hc) = hc {
+                    app.input = app.execs[hc].cmdline.clone();
+                } else {
+                    app.input.clear();
+                }
+            }
+        },
     }
 
-    pub fn unique() -> Self {
-        Self(widget::Id::unique())
-    }
-}
-
-impl From<Id> for widget::Id {
-    fn from(id: Id) -> Self {
-        id.0
-    }
-}
-
-fn _quad(x: f32, y: f32, w: f32, h: f32) -> renderer::Quad {
-    renderer::Quad {
-        bounds: Rectangle::new(Point::new(x, y), Size::new(w, h)),
-        border: Default::default(),
-        shadow: Default::default(),
-        snap: true,
-    }
+    iced::Task::none()
 }

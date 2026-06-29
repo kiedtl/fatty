@@ -46,7 +46,7 @@ use styles::CS;
 use vm::VMStatus;
 use widgets::scrollable::scrollable;
 use widgets::input::input;
-use widgets::controller::controller;
+use widgets::controller;
 
 const FONT_SIZE: f32 = 15.0;
 
@@ -93,7 +93,7 @@ pub struct Execution {
     fd3_master: OwnedFd,
     fd3_slave: OwnedFd,
 
-    string: String,
+    cmdline: String,
     vm: vm::VM,
     term: term::Term,
     output: String,
@@ -108,7 +108,7 @@ pub struct Execution {
 }
 
 impl Execution {
-    pub fn new(string: String, vm: vm::VM, width: usize) -> Execution {
+    pub fn new(cmdline: String, vm: vm::VM, width: usize) -> Execution {
         //let (fd3_master, fd3_slave) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::NONBLOCK).unwrap();
         // Unix socket for bidi communication.. bad idea?
         let (fd3_master, fd3_slave) = rustix::net::socketpair(
@@ -119,7 +119,7 @@ impl Execution {
         ).unwrap();
         Execution {
             fd3_master, fd3_slave,
-            string, vm,
+            cmdline, vm,
             term: term::Term::new(width),
             output: "".to_owned(),
             outputb: Vec::new(),
@@ -173,8 +173,30 @@ impl From<rustix::process::WaitStatus> for ExitReason {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ControlState {
+pub struct ControlState {
+    mode: ControlMode,
+    history_cursor: Option<usize>,
+}
+
+impl ControlState {
+    pub fn new() -> Self {
+        Self {
+            mode: ControlMode::Normal,
+            history_cursor: None,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ControlMode {
     Normal, Insert,
+}
+
+#[derive(Clone, Debug)]
+pub enum ControlMessage {
+    ChangeMode(ControlMode),
+    HistoryUp,
+    HistoryDown,
 }
 
 #[derive(Clone, Debug)]
@@ -189,13 +211,13 @@ pub enum Message {
     Poll,
     Signal(Signal),
     Inotify(OsString),
-    ChangeControlState(ControlState),
+    Controller(ControlMessage),
 }
 
 struct App {
     master: OwnedFd,
     slave: OwnedFd,
-    control_state: ControlState,
+    control: ControlState,
     input: String,
     execs: Vec<Execution>,
     ansi: vte::ansi::Processor,
@@ -243,7 +265,7 @@ impl App {
 
         (
             Self {
-                control_state: ControlState::Normal,
+                control: ControlState::new(),
                 input: String::new(),
                 listing: listing(),
                 listing_last_changed: None,
@@ -270,6 +292,7 @@ impl App {
             Message::Animate => { }
             Message::Input(s) => self.input = s,
             Message::Run => {
+                self.control.history_cursor = None;
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
                         let program = vm::compile(&parsed);
@@ -296,9 +319,9 @@ impl App {
                             }
                         ).unwrap();
 
-                        let string = std::mem::take(&mut self.input);
+                        let cmdline = std::mem::take(&mut self.input);
                         self.execs.push(Execution::new(
-                            string,
+                            cmdline,
                             vm::VM {
                                 env: Arc::new(self.env.clone()),
                                 program: Arc::new(program),
@@ -375,8 +398,8 @@ impl App {
                 self.listing_last_changed = Some((item, Instant::now()));
                 self.listing = listing();
             },
-            Message::ChangeControlState(state) => {
-                self.control_state = state;
+            Message::Controller(message) => {
+                return controller::update(self, message);
             }
         }
         Task::none()
@@ -527,7 +550,7 @@ impl App {
                     container(
                         row![
                             container(
-                                text(&exec.string)
+                                text(&exec.cmdline)
                             )
                                 .width(Length::Fill),
                             exit_reason(exec.exit_reason),
@@ -586,7 +609,7 @@ impl App {
             );
         }
 
-        let mut input = input(self.control_state, "rm -rf /", &self.input);
+        let mut input = input(self.control.mode, "rm -rf /", &self.input);
 
         if let Some(last) = self.execs.last() && !last.vm.done {
             // Input disabled.
@@ -596,9 +619,9 @@ impl App {
                 .on_submit(Message::Run);
         }
 
-        controller(
-            self.control_state,
-            Message::ChangeControlState,
+        controller::controller(
+            &self.control,
+            Message::Controller,
             container(
                 column![
                     row![
@@ -884,7 +907,7 @@ struct MyDirEntry {
     size: u64,
     raw_name: OsString,
     name: String,
-    uname: Option<String>,
+    //uname: Option<String>,
 }
 
 fn listing() -> Vec<MyDirEntry> {
@@ -896,14 +919,14 @@ fn listing() -> Vec<MyDirEntry> {
 
             let mode = met.permissions().mode();
             let kind = FileType::from_raw_mode(mode);
-            let uname = unsafe {
-                let r = libc::getpwuid(met.uid());
-                (r.is_null()).then(||
-                    std::ffi::CStr::from_ptr((*r).pw_name)
-                        .to_string_lossy()
-                        .to_string()
-                )
-            };
+            // let uname = unsafe {
+            //     let r = libc::getpwuid(met.uid());
+            //     (r.is_null()).then(||
+            //         std::ffi::CStr::from_ptr((*r).pw_name)
+            //             .to_string_lossy()
+            //             .to_string()
+            //     )
+            // };
             let size = met.len();
 
             let raw_name = d.file_name();
@@ -912,7 +935,7 @@ fn listing() -> Vec<MyDirEntry> {
                 name.push('/');
             }
 
-            MyDirEntry { mode, kind, uname, size, raw_name, name }
+            MyDirEntry { mode, kind, /*uname,*/ size, raw_name, name }
         })
         .collect::<Vec<_>>();
     entries.sort_by_key(|i| i.name.clone());
