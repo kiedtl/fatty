@@ -1,3 +1,4 @@
+use std::time::{Instant, Duration};
 use std::io::Read;
 
 use anyhow::Result;
@@ -32,7 +33,9 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
     let opts = Opts { num, field };
 
     let mut b = Bolger::new();
-    let mut bolger_print = |h: &[Value], rows: &[Vec<Value>]| {
+    let mut r = 0;
+    let mut t = Instant::now();
+    let mut bolger_print = |b: &mut Bolger, h: &[Value], rows: &[Vec<Value>]| {
         b.begin("table");
         b.attr_str("id", "t");
         print!(" :columns [ ");
@@ -41,13 +44,28 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
         }
         print!("]");
         for r in rows {
-            b.begin("row");
+            b.begin("tr");
             for c in r {
                 b.str(c.to_string());
             }
-            b.end("row");
+            b.end("tr");
         }
         b.end("table");
+    };
+
+    let mut bolger_print_sp = |b: &mut Bolger, r| {
+        b.begin("row");
+        b.attr_str("id", "sp");
+
+        b.begin("spin");
+        b.attr_num("tick", r);
+        b.end("spin");
+
+        b.str(" ");
+        b.num(r);
+        b.str(" rows");
+
+        b.end("row");
     };
 
     let mut fd4 = bwine::Fd4::acquire().unwrap();
@@ -74,6 +92,8 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
         buf.extend_from_slice(&tmp[0..n]);
 
         while !sr.is_done() {
+            let mut changed_something = false;
+
             match sr.read_once(&buf[consumed..], &mut ast) {
                 Ok(nn) => consumed += nn,
                 Err(e) => break,
@@ -125,8 +145,10 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
                         if let Token::Array(_) = &ast[ai]
                             && let Some((ns, Value::Array(row))) = Token::collect(&ast[ai..])
                         {
+                            r += 1;
                             if rows.len() < opts.num {
                                 rows.push(row);
+                                changed_something = true;
                             } else {
                                 for p in 0..rows.len() {
                                     let gt = match (&row[hp], &rows[p][hp]) {
@@ -139,7 +161,7 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
                                     };
                                     if gt {
                                         rows[p] = row;
-                                        bolger_print(&h, &rows);
+                                        changed_something = true;
                                         break;
                                     }
                                 }
@@ -149,6 +171,15 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
                     },
                     S::PA => todo!(),
                 }
+            }
+
+            if changed_something {
+                bolger_print(&mut b, &h, &rows);
+            }
+
+            if t.elapsed() > Duration::from_millis(300) {
+                bolger_print_sp(&mut b, r);
+                t = Instant::now();
             }
         }
 
@@ -160,7 +191,11 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
         let mut bw = bwine::stdout_writer();
         Value::Table { header: h, rows, }.write(&mut bw.0).unwrap();
     } else if true {
-        bolger_print(&h, &rows);
+        bolger_print(&mut b, &h, &rows);
+
+        b.begin("row");
+        b.attr_str("id", "sp");
+        b.end("row");
     } else {
         use tabled::{builder::Builder, settings::{object::Rows, Modify, themes::ColumnNames, Color, Style}};
         let mut builder = Builder::from_iter(

@@ -129,7 +129,7 @@ fn apply<O>(bolger: &mut Bolger, a: &Path, b: &Path, func: fn(&mut Bolger, &Path
 
     let result = (func)(bolger, a, b, depth, opts);
 
-    bolger.begin("row");
+    bolger.begin("tr");
     bolger.attr_str("for", "t");
     bolger.str(a.display());
     bolger.str(b.display());
@@ -137,11 +137,11 @@ fn apply<O>(bolger: &mut Bolger, a: &Path, b: &Path, func: fn(&mut Bolger, &Path
     if let Err(e) = result {
         //eprintln!("{} -> {}: {e}", a.display(), b.display());
         bolger.str(e);
-        bolger.end("row");
+        bolger.end("tr");
         false
     } else {
         bolger.str("ok");
-        bolger.end("row");
+        bolger.end("tr");
         true
     }
 }

@@ -6,6 +6,7 @@ use iced::widget::span;
 
 use crate::bolger::parser::*;
 use crate::helpers::*;
+use crate::widgets::spinnerbar;
 use crate::styles::{CS, Theme};
 
 pub type Id = String;
@@ -103,14 +104,20 @@ pub enum Element {
         columns: Vec<TableColumn>,
         rows: Vec<Vec<Option<Element>>>,
     },
+    Spinner {
+        tick: u64,
+    },
     Progress {
         done: f64,
         max: f64,
     },
     Column(TableColumn),
-    Row {
+    Tr {
         for_table: Option<Id>,
         values: Vec<Option<Element>>
+    },
+    Row {
+        items: Vec<Element>,
     },
     Id(Id),
 }
@@ -140,7 +147,7 @@ impl Element {
 
     pub fn to_iced<'a>(&'a self, style: Style, ids: &'a HashMap<Id, Element>) -> crate::Elem<'a> {
         use iced::{Background, Border, Padding, Length, alignment};
-        use iced::widget::{container, row, text, space, responsive, table::{self, Table}};
+        use iced::widget::{container, row, Row, text, space, responsive, table::{self, Table}};
         use crate::Elem;
 
         match self {
@@ -164,6 +171,10 @@ impl Element {
                 )
                     .width(Length::Fill)
                     .align_x(alignment::Horizontal::Center)
+                    .into()
+            },
+            Element::Spinner { tick } => {
+                spinnerbar::SpinnerBar::new(*tick, Default::default())
                     .into()
             },
             Element::Progress { done, max } => {
@@ -206,6 +217,11 @@ impl Element {
                     .into()
             },
             Element::Column(c) => text(format!("<column {c:?}>")).into(),
+            Element::Row { items } => {
+                Row::with_children(
+                    items.iter().map(|it| it.to_iced(style, ids))
+                ).into()
+            },
             Element::Id(id) => ids.get(id).unwrap().to_iced(style, ids),
             c => Rich::with_spans(vec![c.to_iced_span(style, ids)]).into(),
         }
@@ -287,6 +303,28 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Ele
         Node::Sexp { tag, attrs, children } if tag == "h2" => Element::Header(2, process_style_elem(attrs, children, ids)?),
         Node::Sexp { tag, attrs, children } if tag == "h3" => Element::Header(3, process_style_elem(attrs, children, ids)?),
 
+        Node::Sexp { tag, attrs, children } if tag == "spin" => {
+            let mut tick = 0u64;
+
+            if children.len() != 0 {
+                Err(format!("`spinner` must have zero children"))?;
+            }
+
+            for (attr, value) in attrs {
+                match attr.as_str() {
+                    "id" => (),
+                    "tick" =>
+                        match value {
+                            AttrValue::Number(a) => tick = a.trunc() as u64,
+                            _ => Err(format!("Spinner.done must be a whole number"))?,
+                        },
+                    s => Err(format!("Unknown `spinner` attribute {s}"))?,
+                }
+            }
+
+            Element::Spinner { tick }
+        }
+
         Node::Sexp { tag, attrs, children } if tag == "progress" => {
             let mut done = 0.;
             let mut max = 1.;
@@ -314,6 +352,7 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Ele
 
             Element::Progress { done, max }
         }
+
         Node::Sexp { tag, attrs, children } if tag == "table" => {
             let mut columns: Vec<TableColumn> = Vec::new();
             let mut rows: Vec<Vec<Option<Element>>> = Vec::new();
@@ -344,7 +383,7 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Ele
 
             for child in children {
                 let values = match consume(child, ids)? {
-                    Some(Element::Row { values, .. }) => values,
+                    Some(Element::Tr { values, .. }) => values,
                     _ => Err(format!("Expected row"))?,
                 };
                 rows.push(values);
@@ -371,7 +410,7 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Ele
 
             Element::Column(TableColumn { name })
         }
-        Node::Sexp { tag, attrs, children } if tag == "row" => {
+        Node::Sexp { tag, attrs, children } if tag == "tr" => {
             let mut for_table = None;
             for (attr, value) in attrs {
                 match (attr.as_str(), value) {
@@ -388,7 +427,21 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Ele
                 }
             }
 
-            Element::Row { values, for_table }
+            Element::Tr { values, for_table }
+        },
+        Node::Sexp { tag, attrs, children } if tag == "row" => {
+            for (attr, value) in attrs {
+                match (attr.as_str(), value) {
+                    ("id", _) => (),
+                    (s, _) => Err(format!("Unknown row attribute {s}"))?,
+                }
+            }
+
+            let items = children.iter()
+                .filter_map(|c| consume(c, ids).transpose())
+                .collect::<Result<Vec<Element>, String>>()?;
+
+            Element::Row { items }
         },
         Node::Sexp { tag, .. } => Err(format!("Unknown element {tag}."))?,
     };
@@ -407,7 +460,7 @@ pub fn consume(node: &Node, ids: &mut HashMap<Id, Element>) -> Result<Option<Ele
 
     if let Some(elem) = elem {
         match elem {
-            Element::Row { for_table: Some(table), values } => {
+            Element::Tr { for_table: Some(table), values } => {
                 if let Some(Element::Table { rows, .. }) = ids.get_mut(&table) {
                     rows.push(values);
                     return Ok(None);

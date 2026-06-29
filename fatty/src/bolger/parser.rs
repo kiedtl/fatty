@@ -125,10 +125,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // Helper methods
-    // ---------------------------------------------------------------------
-
     fn read_free_text(&mut self) -> String {
         let mut s = String::new();
         while let Some(&c) = self.input.peek() {

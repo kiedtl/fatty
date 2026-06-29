@@ -5,6 +5,7 @@ use vte::ansi::Rgb;
 use crate::colors::Hsv;
 use crate::widgets::scrollable;
 use crate::widgets::input;
+use crate::widgets::spinnerbar;
 
 const RAD_PX: f32 = 2.;
 pub const RAD: Radius = Radius { top_left: RAD_PX, top_right: RAD_PX, bottom_right: RAD_PX, bottom_left: RAD_PX };
@@ -55,7 +56,7 @@ impl Theme {
             bg_sat: 0.03, //0.14, //0.153,
 
             ac_hue: 20, //19,
-            ac_sat: 0.21, //0.61,
+            ac_sat: 0.38, //0.61,
         }
     }
 
@@ -261,6 +262,16 @@ impl input::Catalog for Theme {
     }
 }
 
+impl spinnerbar::Catalog for Theme {
+    fn style(&self) -> spinnerbar::Style {
+        spinnerbar::Style {
+            border: self.bg(3),
+            border_radius: RAD_PX,
+            track: self.bg(8),
+            fill: self.ac(8),
+        }
+    }
+}
 
 impl button::Catalog for Theme {
     type Class<'a> = Box<dyn Fn(&Theme, button::Status) -> button::Style + 'a>;
