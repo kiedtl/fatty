@@ -1,5 +1,6 @@
 #![allow(unused_imports)]
 
+use std::borrow::Cow;
 use std::cell;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -13,6 +14,7 @@ use std::process::{Command, Child};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, Duration};
 
+use futures::stream::BoxStream;
 use futures::channel::mpsc::Sender;
 use futures::{StreamExt, SinkExt};
 use inotify;
@@ -90,17 +92,22 @@ fn main() -> iced::Result {
 }
 
 pub struct Execution {
-    fd3_master: OwnedFd,
+    fd3_master: Arc<OwnedFd>,
     fd3_slave: OwnedFd,
 
     cmdline: String,
     vm: vm::VM,
-    term: term::Term,
-    output: String,
-    outputb: Vec<u8>,
-    document: bolger::ui::Document,
-    object: Option<bwine::Value<'static>>,
     exit_reason: Option<ExitReason>,
+    is_drained: bool,
+    fd3_is_drained: bool,
+
+    term: term::Term,
+    ansi: vte::ansi::Processor,
+
+    document: bolger::ui::Document,
+    output: String,
+    object: Option<bwine::Value<'static>>,
+    outputb: Vec<u8>,
 
     b_err: bool, // Is the output corrupted permanently
     p_stack: usize,
@@ -118,14 +125,18 @@ impl Execution {
             None,
         ).unwrap();
         Execution {
-            fd3_master, fd3_slave,
+            fd3_master: Arc::new(fd3_master),
+            fd3_slave,
             cmdline, vm,
             term: term::Term::new(width),
+            ansi: vte::ansi::Processor::new(),
             output: "".to_owned(),
             outputb: Vec::new(),
             document: bolger::ui::Document::new(),
             object: None,
             exit_reason: None,
+            is_drained: false,
+            fd3_is_drained: false,
             b_err: false,
             p_stack: 0,
             q_flag: false,
@@ -189,7 +200,9 @@ impl ControlState {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ControlMode {
-    Normal, Insert,
+    Normal,
+    Insert,
+    Term,
 }
 
 #[derive(Clone, Debug)]
@@ -208,19 +221,20 @@ pub enum Message {
     ContinueProgram,
     ChildExited(Pid, ExitReason),
     JobResolved(usize, usize),
-    Poll,
+    Pty(usize, bool, Box<[u8]>),
+    PtyInput(usize, Cow<'static, [u8]>),
+    PtyDrained(usize, bool),
     Signal(Signal),
     Inotify(OsString),
     Controller(ControlMessage),
 }
 
 struct App {
-    master: OwnedFd,
+    master: Arc<OwnedFd>,
     slave: OwnedFd,
     control: ControlState,
     input: String,
     execs: Vec<Execution>,
-    ansi: vte::ansi::Processor,
     theme: styles::Theme,
     env: HashMap<OsString, OsString>,
 
@@ -270,9 +284,8 @@ impl App {
                 listing: listing(),
                 listing_last_changed: None,
                 execs: Vec::new(),
-                master: pty.controller,
+                master: Arc::new(pty.controller),
                 slave: pty.user,
-                ansi: vte::ansi::Processor::new(),
                 theme: styles::Theme::gruvbox(),
                 //shell: Arc::new(TokioMutex::new(shell)),
                 vwidth: cell::Cell::new(None),
@@ -293,6 +306,7 @@ impl App {
             Message::Input(s) => self.input = s,
             Message::Run => {
                 self.control.history_cursor = None;
+                self.control.mode = ControlMode::Term;
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
                         let program = vm::compile(&parsed);
@@ -339,7 +353,6 @@ impl App {
                     },
                     Err(err) => {
                         outln!("{err}");
-                        self.poll_pty();
                     }
                 }
             },
@@ -352,12 +365,16 @@ impl App {
                         if current.vm.done {
                             current.exit_reason = current.vm.child_exit_stack.pop();
                             current.cleanup();
+                            if self.control.mode == ControlMode::Term {
+                                if !self.execs.iter().any(|e| !e.vm.done) {
+                                    self.control.mode = ControlMode::Insert;
+                                }
+                            }
                             break;
                         } else if current.vm.waiting_on.is_some() {
                             break;
                         }
                     }
-                    self.poll_pty();
                 }
             },
             Message::ChildExited(pid, reason) => {
@@ -388,7 +405,73 @@ impl App {
             Message::JobResolved(_exec_ind, _job_ind) => {
                 // todo
             },
-            Message::Poll => self.poll_pty(),
+            Message::Pty(exec_ind, is_fd3, buf) => {
+                let Some(exec) = self.execs.get_mut(exec_ind) else { return Task::none() };
+                if !is_fd3 {
+                    exec.ansi.advance(&mut exec.term, &buf);
+
+                    if !exec.b_err {
+                        let mut buf_last = 0;
+                        for ind in 0..buf.len() {
+                            match buf[ind] {
+                                b'(' => exec.p_stack += 1,
+                                b')' if exec.p_stack == 0 => exec.b_err = true,
+                                b')' => exec.p_stack -= 1,
+                                b'"' => exec.q_flag = !exec.q_flag,
+                                _ => continue,
+                            }
+
+                            if !exec.b_err && exec.p_stack == 0 && !exec.q_flag {
+                                exec.output.push_str(&String::from_utf8_lossy(&buf[buf_last..ind + 1]));
+                                buf_last = ind + 1;
+
+                                match bolger::parser::parse(&exec.output) {
+                                    Ok(ast) => {
+                                        exec.output.clear();
+                                        exec.document.consume_nodes(&ast).unwrap();
+                                    },
+                                    Err(e) => {
+                                        println!("bolger: {e:?}");
+                                    }
+                                }
+                            }
+                        }
+
+                        exec.output.push_str(&String::from_utf8_lossy(&buf[buf_last..]));
+                    }
+                } else {
+                    exec.outputb.extend(&buf);
+
+                    let mut bd = bwine::buffer_decoder(&exec.outputb);
+                    match bwine::Value::read(&mut bd) {
+                        Ok(obj) => exec.object = Some(obj),
+                        Err(e) => {
+                            exec.object = None;
+                            println!("bwine: {e:?}");
+                        }
+                    }
+                }
+            },
+            Message::PtyInput(_exec_ind, bytes) => {
+                let mut consumed = 0;
+                while consumed < bytes.len() {
+                    match rustix::io::write(&self.master, &bytes[consumed..]) {
+                        Ok(n) => consumed += n,
+                        Err(rustix::io::Errno::AGAIN) => (),
+                        Err(e) => Err(e).unwrap(),
+                    }
+                }
+            },
+            Message::PtyDrained(exec_ind, is_fd3) => {
+                let Some(exec) = self.execs.get_mut(exec_ind) else { return Task::none() };
+                if exec.vm.done {
+                    if is_fd3 {
+                        exec.fd3_is_drained = true;
+                    } else {
+                        exec.is_drained = true;
+                    }
+                }
+            },
             Message::Signal(sig) => {
                 if let Some(current) = self.execs.last() && let Some(pid) = current.vm.waiting_on {
                     kill_process(pid, sig).unwrap();
@@ -406,10 +489,20 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let poll = if let Some(last) = self.execs.last() && !last.vm.done {
-            iced::time::every(Duration::from_millis(30)).map(|_| Message::Poll)
+        let mut polling_subs = self.execs.iter()
+            .enumerate()
+            .map(|(exec_ind, exec)| [
+                (self.master.clone(), exec_ind, false, exec.is_drained),
+                (exec.fd3_master.clone(), exec_ind, true, exec.fd3_is_drained),
+            ])
+            .flatten()
+            .filter(|(_, _, _, is_drained)| !is_drained)
+            .map(|(fd, exec_ind, is_fd3, _)| readpty(fd, exec_ind, is_fd3))
+            .collect::<Vec<_>>();
+        let polls = if polling_subs.len() == 1 {
+            polling_subs.remove(0)
         } else {
-            Subscription::none()
+            Subscription::batch(polling_subs)
         };
 
         let keys = iced::event::listen_with(|ev, status, _id| {
@@ -457,7 +550,7 @@ impl App {
             Subscription::none()
         };
 
-        Subscription::batch([poll, keys, wait, jobs, fswatch, animation])
+        Subscription::batch([polls, keys, wait, jobs, fswatch, animation])
     }
 
     fn view(&self) -> Elem<'_> {
@@ -544,7 +637,7 @@ impl App {
         let mut execs = Column::new()
             .spacing(1);
 
-        for exec in &self.execs {
+        for (i, exec) in self.execs.iter().enumerate() {
             execs = execs.push(
                 column![
                     container(
@@ -589,6 +682,8 @@ impl App {
                                 &self.theme,
                                 FONT_SIZE,
                                 |term, theme, color| term.resolve(theme, color),
+                                move |c| Message::PtyInput(i, c),
+                                i == self.execs.len() - 1 && !exec.vm.done
                             )
                         )
                             .padding(1)
@@ -716,70 +811,40 @@ impl App {
         )
             .into()
     }
+}
 
-    fn poll_pty(&mut self) {
-        if let Some(last) = self.execs.last_mut() {
-            let mut buf = [0u8; 4096];
-            loop {
-                match rustix::io::read(&self.master, &mut buf) {
-                    Ok(n) => {
-                        self.ansi.advance(&mut last.term, &buf[0..n]);
-
-                        if !last.b_err {
-                            let mut buf_last = 0;
-                            for ind in 0..n {
-                                match buf[ind] {
-                                    b'(' => last.p_stack += 1,
-                                    b')' if last.p_stack == 0 => last.b_err = true,
-                                    b')' => last.p_stack -= 1,
-                                    b'"' => last.q_flag = !last.q_flag,
-                                    _ => continue,
-                                }
-
-                                if !last.b_err && last.p_stack == 0 && !last.q_flag {
-                                    last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..ind + 1]));
-                                    buf_last = ind + 1;
-
-                                    match bolger::parser::parse(&last.output) {
-                                        Ok(ast) => {
-                                            last.output.clear();
-                                            last.document.consume_nodes(&ast).unwrap();
-                                        },
-                                        Err(e) => {
-                                            println!("bolger: {e:?}");
-                                        }
-                                    }
-                                }
-                            }
-
-                            last.output.push_str(&String::from_utf8_lossy(&buf[buf_last..n]));
-                        }
-                    },
-                    Err(rustix::io::Errno::AGAIN) => break,
-                    e => _ = e.unwrap(),
-                }
-            }
-
-            loop {
-                match rustix::io::read(&last.fd3_master, &mut buf) {
-                    Ok(n) => {
-                        last.outputb.extend(&buf[0..n]);
-
-                        let mut bd = bwine::buffer_decoder(&last.outputb);
-                        match bwine::Value::read(&mut bd) {
-                            Ok(obj) => last.object = Some(obj),
-                            Err(e) => {
-                                last.object = None;
-                                println!("bwine: {e:?}");
+fn readpty(master: Arc<OwnedFd>, exec_ind: usize, is_fd3: bool) -> Subscription<Message> {
+    iced::advanced::subscription::from_recipe(utils::Runner {
+        id: (exec_ind, is_fd3, master.as_raw_fd()),
+        spawn: move |_| -> BoxStream<'static, Message> {
+            Box::pin(stream::unfold((master, exec_ind, is_fd3), |(master, exec_ind, is_fd3)| async move {
+                let mut buf = [0u8; 8192];
+                let mut tries = 0;
+                loop {
+                    match rustix::io::read(&*master, &mut buf) {
+                        Err(rustix::io::Errno::AGAIN) => {
+                            tries += 1;
+                            if tries > 10 {
+                                return Some((
+                                    Message::PtyDrained(exec_ind, is_fd3),
+                                    (master, exec_ind, is_fd3)
+                                ));
+                            } else {
+                                tokio::time::sleep(Duration::from_millis(50)).await;
                             }
                         }
-                    },
-                    Err(rustix::io::Errno::AGAIN) => break,
-                    e => _ = e.unwrap(),
+                        Ok(n) => {
+                            return Some((
+                                Message::Pty(exec_ind, is_fd3, Box::from(&buf[..n])),
+                                (master, exec_ind, is_fd3)
+                            ));
+                        }
+                        Err(_) => return None,
+                    }
                 }
-            }
-        }
-    }
+            }))
+        },
+    })
 }
 
 pub fn fswatch(path: PathBuf) -> Subscription<OsString> {

@@ -165,6 +165,7 @@ impl VM {
                     pcmd.stdin(rustix::io::dup(slave).unwrap());
                     pcmd.stdout(rustix::io::dup(slave).unwrap());
                     pcmd.stderr(rustix::io::dup(slave).unwrap());
+                    add_terminal_controller(&mut pcmd, slave);
                 }
                 if let Some(slave_obj) = slave_obj {
                     add_stdobjout(&mut pcmd, slave_obj);
@@ -375,6 +376,17 @@ fn add_stdobjout(cmd: &mut std::process::Command, fd3_slave: BorrowedFd) {
     let fd3_raw = fd3_slave.as_raw_fd();
     unsafe {
         cmd.pre_exec(move || safe_dup_nocloexec(fd3_raw, 3));
+    }
+}
+
+fn add_terminal_controller(cmd: &mut std::process::Command, slave: BorrowedFd) {
+    let raw = slave.as_raw_fd();
+    unsafe {
+        cmd.pre_exec(move || {
+            rustix::process::setsid()?;
+            rustix::process::ioctl_tiocsctty(&BorrowedFd::borrow_raw(raw))?;
+            Ok(())
+        });
     }
 }
 

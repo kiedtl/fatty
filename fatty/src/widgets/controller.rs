@@ -190,35 +190,37 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        match &event {
-            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(key), modifiers, .. }) => {
-                match (self.state, *modifiers, key) {
-                    (_, Modifiers::NONE, Named::Escape) => {
-                        self.send(shell, ControlMessage::ChangeMode(ControlMode::Normal));
-                        return;
-                    },
-                    _ => (),
+        if self.state.mode != ControlMode::Term {
+            match &event {
+                Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(key), modifiers, .. }) => {
+                    match (self.state, *modifiers, key) {
+                        (_, Modifiers::NONE, Named::Escape) => {
+                            self.send(shell, ControlMessage::ChangeMode(ControlMode::Normal));
+                            return;
+                        },
+                        _ => (),
+                    }
+                },
+                Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(key), modifiers, physical_key, .. }) => {
+                    let lkey = Key::Character(key.clone()).to_latin(*physical_key);
+                    match (self.state.mode, *modifiers, lkey) {
+                        (ControlMode::Normal, Modifiers::NONE, Some('k')) => {
+                            self.send(shell, ControlMessage::HistoryUp);
+                            return;
+                        },
+                        (ControlMode::Normal, Modifiers::NONE, Some('j')) => {
+                            self.send(shell, ControlMessage::HistoryDown);
+                            return;
+                        },
+                        (ControlMode::Normal, Modifiers::NONE, Some('i')) => {
+                            self.send(shell, ControlMessage::ChangeMode(ControlMode::Insert));
+                            return;
+                        },
+                        _ => (),
+                    }
                 }
-            },
-            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(key), modifiers, physical_key, .. }) => {
-                let lkey = Key::Character(key.clone()).to_latin(*physical_key);
-                match (self.state.mode, *modifiers, lkey) {
-                    (ControlMode::Normal, Modifiers::NONE, Some('k')) => {
-                        self.send(shell, ControlMessage::HistoryUp);
-                        return;
-                    },
-                    (ControlMode::Normal, Modifiers::NONE, Some('j')) => {
-                        self.send(shell, ControlMessage::HistoryDown);
-                        return;
-                    },
-                    (ControlMode::Normal, Modifiers::NONE, Some('i')) => {
-                        self.send(shell, ControlMessage::ChangeMode(ControlMode::Insert));
-                        return;
-                    },
-                    _ => (),
-                }
+                _ => (),
             }
-            _ => (),
         }
 
         self.content.as_widget_mut().update(

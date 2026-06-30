@@ -4,6 +4,7 @@ use vte::ansi::{
     Color, NamedColor,
     CursorStyle, CursorShape,
     LineClearMode, ClearMode, TabulationClearMode,
+    Mode, NamedMode,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -58,6 +59,7 @@ pub struct Term {
     pub cursor_bg: Color,
     pub cursor_attrs: CellAttrs,
     pub width: usize,
+    pub insert_mode: bool,
 }
 
 impl Term {
@@ -70,6 +72,7 @@ impl Term {
             cursor_bg: Color::Named(NamedColor::Background),
             cursor_attrs: CellAttrs::empty(),
             width,
+            insert_mode: false,
         }
     }
 
@@ -142,6 +145,10 @@ impl vte::ansi::Handler for Term {
     fn input(&mut self, ch: char) {
         self.allocate_rows_until(self.cursor_y);
 
+        if self.insert_mode {
+            self.insert_blank(1);
+        }
+
         *self.cursor_cell_mut() = Cell {
             ch,
             fg: self.cursor_fg,
@@ -157,40 +164,76 @@ impl vte::ansi::Handler for Term {
     }
 
     /// Set cursor to position.
-    fn goto(&mut self, _line: i32, _col: usize) {}
+    fn goto(&mut self, line: i32, col: usize) {
+        self.cursor_y = line.max(0) as usize;
+        self.cursor_x = col.min(self.width.saturating_sub(1));
+        self.allocate_rows_until(self.cursor_y);
+    }
 
     /// Set cursor to specific row.
-    fn goto_line(&mut self, _line: i32) {}
+    fn goto_line(&mut self, line: i32) {
+        self.cursor_y = line.max(0) as usize;
+        self.allocate_rows_until(self.cursor_y);
+    }
 
     /// Set cursor to specific column.
-    fn goto_col(&mut self, _col: usize) {}
+    fn goto_col(&mut self, col: usize) {
+        self.cursor_x = col.min(self.width.saturating_sub(1));
+    }
 
     /// Insert blank characters in current line starting from cursor.
-    fn insert_blank(&mut self, _: usize) {}
+    fn insert_blank(&mut self, n: usize) {
+        let n = n.min(self.width - self.cursor_x);
+        let src = self.cursor_x;
+        let dest = src + n;
+        let ncells = self.width - dest;
+
+        let row = &mut self.cells[self.cursor_y][..];
+
+        // Move cells towards end of line
+        for offset in (0..ncells).rev() {
+            row.swap(dest + offset, src + offset);
+        }
+
+        // Add blanks
+        for cell in &mut row[src..dest] {
+            cell.ch = ' ';
+            cell.bg = self.cursor_bg;
+        }
+    }
 
     /// Move cursor up `rows`.
-    fn move_up(&mut self, _: usize) {}
+    fn move_up(&mut self, n: usize) {
+        self.cursor_y = self.cursor_y.saturating_sub(n);
+    }
 
     /// Move cursor down `rows`.
-    fn move_down(&mut self, _: usize) {}
-
-    /// Identify the terminal (should write back to the pty stream).
-    fn identify_terminal(&mut self, _intermediate: Option<char>) {}
-
-    /// Report device status.
-    fn device_status(&mut self, _: usize) {}
+    fn move_down(&mut self, n: usize) {
+        self.cursor_y += n;
+        self.allocate_rows_until(self.cursor_y);
+    }
 
     /// Move cursor forward `cols`.
-    fn move_forward(&mut self, _col: usize) {}
+    fn move_forward(&mut self, n: usize) {
+        self.cursor_x = (self.cursor_x + n).min(self.width - 1);
+    }
 
     /// Move cursor backward `cols`.
-    fn move_backward(&mut self, _col: usize) {}
+    fn move_backward(&mut self, n: usize) {
+        self.cursor_x = self.cursor_x.saturating_sub(n);
+    }
 
     /// Move cursor down `rows` and set to column 1.
     fn move_down_and_cr(&mut self, _row: usize) {}
 
     /// Move cursor up `rows` and set to column 1.
     fn move_up_and_cr(&mut self, _row: usize) {}
+
+    /// Identify the terminal (should write back to the pty stream).
+    fn identify_terminal(&mut self, _intermediate: Option<char>) {}
+
+    /// Report device status.
+    fn device_status(&mut self, _: usize) {}
 
     /// Put `count` tabs.
     fn put_tab(&mut self, mut count: u16) {
@@ -215,8 +258,10 @@ impl vte::ansi::Handler for Term {
         }
     }
 
-    /// Backspace `count` characters.
-    fn backspace(&mut self) {}
+    /// Backspace.
+    fn backspace(&mut self) {
+        self.cursor_x = self.cursor_x.saturating_sub(1);
+    }
 
     /// Carriage return.
     fn carriage_return(&mut self) {
@@ -260,13 +305,38 @@ impl vte::ansi::Handler for Term {
     ///
     /// Erase means resetting to the default state (default colors, no content,
     /// no mode flags).
-    fn erase_chars(&mut self, _: usize) {}
+    fn erase_chars(&mut self, n: usize) {
+        self.allocate_rows_until(self.cursor_y);
+        let start = self.cursor_x;
+        let end = (start + n).min(self.width);
+        for cell in &mut self.cells[self.cursor_y][start..end] {
+            cell.ch = ' ';
+            cell.bg = self.cursor_bg;
+        }
+    }
 
     /// Delete `count` chars.
     ///
     /// Deleting a character is like the delete key on the keyboard - everything
     /// to the right of the deleted things is shifted left.
-    fn delete_chars(&mut self, _: usize) {}
+    fn delete_chars(&mut self, n: usize) {
+        let n = n.min(self.width);
+
+        let start = self.cursor_x;
+        let end = (start + n).min(self.width - 1);
+        let ncells = self.width - end;
+        let row = &mut self.cells[self.cursor_y][..];
+
+        for offset in 0..ncells {
+            row.swap(start + offset, end + offset);
+        }
+
+        let end = self.width - n;
+        for cell in &mut row[end..] {
+            cell.ch = ' ';
+            cell.bg = self.cursor_bg;
+        }
+    }
 
     /// Move backward `count` tabs.
     fn move_backward_tabs(&mut self, _count: u16) { }
@@ -276,7 +346,7 @@ impl vte::ansi::Handler for Term {
         for _ in 0..count {
             self.cursor_x = (self.cursor_x + 7) & !7;
         }
-        self.cursor_x = self.cursor_x.max(self.width - 1);
+        self.cursor_x = self.cursor_x.min(self.width - 1);
     }
 
     /// Save current cursor position.
@@ -286,7 +356,18 @@ impl vte::ansi::Handler for Term {
     fn restore_cursor_position(&mut self) {}
 
     /// Clear current line.
-    fn clear_line(&mut self, _mode: LineClearMode) {}
+    fn clear_line(&mut self, mode: LineClearMode) {
+        self.allocate_rows_until(self.cursor_y);
+        let (start, end) = match mode {
+            LineClearMode::Right => (self.cursor_x, self.width),
+            LineClearMode::Left => (0, (self.cursor_x + 1).min(self.width)),
+            LineClearMode::All => (0, self.width),
+        };
+        for cell in &mut self.cells[self.cursor_y][start..end] {
+            cell.ch = ' ';
+            cell.bg = self.cursor_bg;
+        }
+    }
 
     /// Clear screen.
     fn clear_screen(&mut self, _mode: ClearMode) {}
@@ -323,5 +404,26 @@ impl vte::ansi::Handler for Term {
             _ => (),
         }
     }
-}
 
+    fn set_mode(&mut self, mode: Mode) {
+        let mode = match mode {
+            Mode::Named(mode) => mode,
+            Mode::Unknown(_) => return,
+        };
+        match mode {
+            NamedMode::Insert => self.insert_mode = true,
+            NamedMode::LineFeedNewLine => (), // TODO: line feed new line
+        }
+    }
+
+    fn unset_mode(&mut self, mode: Mode) {
+        let mode = match mode {
+            Mode::Named(mode) => mode,
+            Mode::Unknown(_) => return,
+        };
+        match mode {
+            NamedMode::Insert => self.insert_mode = false,
+            NamedMode::LineFeedNewLine => (), // TODO: line feed new line
+        }
+    }
+}

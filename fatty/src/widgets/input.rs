@@ -1012,6 +1012,7 @@ where
                             _ => {}
                         }
                     }
+                    ControlMode::Term => (),
                 }
             }
             Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) => {
@@ -1310,6 +1311,7 @@ enum Paste {
 impl<P: text::Paragraph> State<P> {
     pub fn new(cstate: ControlMode) -> Self {
         let is_focused = match cstate {
+            ControlMode::Term => None,
             ControlMode::Normal | ControlMode::Insert => {
                 let now = Instant::now();
                 Some(Focus {

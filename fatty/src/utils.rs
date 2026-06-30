@@ -1,14 +1,47 @@
 use std::fmt;
-use rustix::process::Signal;
+use std::hash::Hash;
 
-use iced::{alignment, Length, Background, Border};
+use rustix::process::Signal;
+use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
+
+use iced::{alignment, Length, Background, Border, Subscription};
 use iced::widget::{Text, text, Row, row, column, container, responsive};
 use iced::advanced::text::IntoFragment;
+use iced::advanced::subscription::{Recipe, EventStream, Hasher};
 
 use crate::colors;
 use crate::styles::{self, CS, TextClass, Theme};
 use crate::Elem;
 use crate::helpers::*;
+
+// Copied wholesale from Iced's source, after run_with_id() was removed.
+pub struct Runner<I, F, S, T>
+where
+    F: FnOnce(EventStream) -> S,
+    S: Stream<Item = T>,
+{
+    pub id: I,
+    pub spawn: F,
+}
+
+impl<I, F, S, T> Recipe for Runner<I, F, S, T>
+where
+    I: Hash + 'static,
+    F: FnOnce(EventStream) -> S,
+    S: Stream<Item = T> + Send + 'static,
+{
+    type Output = T;
+
+    fn hash(&self, state: &mut Hasher) {
+        std::any::TypeId::of::<I>().hash(state);
+        self.id.hash(state);
+    }
+
+    fn stream(self: Box<Self>, input: EventStream) -> BoxStream<'static, Self::Output> {
+        futures::stream::StreamExt::boxed((self.spawn)(input))
+    }
+}
 
 pub fn signal_to_string(signal: Signal) -> &'static str {
     match signal {
