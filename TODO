@@ -1,31 +1,42 @@
 Showstoppers
-- cd
+x cd
 x update listing with inotify
-- jobs writing to a pty properly
+- pty for each execution
+  - properly closing ptys
+  - jobs writing to a pty properly
 - Ctrl+Z, fg, bg
+x terminal input
 
 Basic functions
 - input
-  - auto-focus on startup
-  - vim editing
-  - arrow keys to go back/forwards
+  x auto-focus on startup
+  x basic vim editing
   - ctrl+l to "clear"
 - statusbar
   x current directory
   - git branch
   x hostname? (why bother since you can only be local?)
-- read from pty master properly
+x read from pty master properly
 - history
+  x arrow keys to go back/forwards
   - time began, ended, taken
   - directory
 - environment variables
   - $env variables
   - set for command
 
+QoL
+- Put large tables in scrollbar
+
 Crickhollow (re)implementations
 - document output
   x cp
-  - top, ps
+    - progress bars
+  x du
+    - FATTY env var
+    - spinner
+  - top
+    - graphs
   - pastel
   - cal
   - qr (great for checking images...)
@@ -34,17 +45,22 @@ Crickhollow (re)implementations
     - code (bat syntax highlighting?)
     - images
 - object output
+  x df
+  - ps
   - ls
-  - du
-  - df
+  x du
   - wc
   - lsblk
   - sqlite repl
   - fd (wrapper)
   - rg (wrapper)
+  - tar (lmao)
+    - See: doc/fatty-todo.txt
+
+Project: completions
 
 Project: user input
-- regular terminal input
+x regular terminal input
 - document input
   - once done: fork doas
     - https://github.com/multiplexd/doas/blob/master/doas.c
