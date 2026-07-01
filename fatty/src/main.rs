@@ -104,10 +104,17 @@ pub struct Execution {
     term: term::Term,
     ansi: vte::ansi::Processor,
 
-    document: bolger::ui::Document,
     output: String,
-    object: Option<bwine::Value<'static>>,
     outputb: Vec<u8>,
+
+    document: bolger::ui::Document,
+
+    bwine_ast: Vec<bwine::Token<'static>>,
+    bwine_sr: bwine::StreamingReader,
+    bwine_object: Option<bwine::Value<'static>>,
+    bwine_extra: bool,
+    bwine_error: bool,
+    bwine_consumed: usize,
 
     b_err: bool, // Is the output corrupted permanently
     p_stack: usize,
@@ -132,8 +139,13 @@ impl Execution {
             ansi: vte::ansi::Processor::new(),
             output: "".to_owned(),
             outputb: Vec::new(),
+            bwine_ast: Vec::new(),
+            bwine_sr: bwine::StreamingReader::new(),
+            bwine_object: None,
+            bwine_extra: false,
+            bwine_error: false,
+            bwine_consumed: 0,
             document: bolger::ui::Document::new(),
-            object: None,
             exit_reason: None,
             is_drained: false,
             fd3_is_drained: false,
@@ -442,13 +454,29 @@ impl App {
                 } else {
                     exec.outputb.extend(&buf);
 
-                    let mut bd = bwine::buffer_decoder(&exec.outputb);
-                    match bwine::Value::read(&mut bd) {
-                        Ok(obj) => exec.object = Some(obj),
-                        Err(e) => {
-                            exec.object = None;
-                            println!("bwine: {e:?}");
+                    if !exec.bwine_error && !exec.bwine_sr.is_done() {
+                        while !exec.bwine_sr.is_done() {
+                            match exec.bwine_sr.read_once(&exec.outputb[exec.bwine_consumed..], &mut exec.bwine_ast) {
+                                Ok(nn) => exec.bwine_consumed += nn,
+                                Err(e) if e.is_end_of_input() => break,
+                                Err(e) => {
+                                    exec.bwine_object = None;
+                                    exec.bwine_error = true;
+                                    println!("bwine: {e:?}");
+                                },
+                            }
+
+                            if let Some((v, object)) = bwine::Token::collect(&exec.bwine_ast) {
+                                assert!(exec.bwine_sr.is_done());
+                                exec.bwine_object = Some(object);
+                                exec.bwine_extra = v < exec.bwine_ast.len();
+                            }
+
+                            exec.outputb.drain(..exec.bwine_consumed);
+                            exec.bwine_consumed = 0;
                         }
+                    } else {
+                        exec.bwine_extra = true;
                     }
                 }
             },
@@ -673,7 +701,7 @@ impl App {
                             e
                         }).into();
                         e
-                    } else if let Some(object) = &exec.object {
+                    } else if let Some(object) = &exec.bwine_object {
                         scrollable(bwine_ui::to_iced(object)).into()
                     } else {
                         container(

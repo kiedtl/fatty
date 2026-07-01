@@ -96,7 +96,11 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
 
             match sr.read_once(&buf[consumed..], &mut ast) {
                 Ok(nn) => consumed += nn,
-                Err(e) => break,
+                Err(e) if e.is_end_of_input() => break,
+                Err(e) => {
+                    eprintln!("Error: {e:?}");
+                    return Ok(());
+                },
             }
 
             if ai < ast.len() {

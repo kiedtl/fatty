@@ -129,7 +129,20 @@ impl<'a> Token<'a> {
                 (1 + ns, Value::Tag(*t, Box::new(it)))
             }
 
-            Token::Table => todo!(),
+            Token::Table => {
+                let mut i = 1;
+                let (ns, Value::Array(he)) = Self::collect(&ast[i..])?
+                    else { return None }; // TODO: error
+                i += ns;
+                let (ns, Value::Array(rw)) = Self::collect(&ast[i..])?
+                    else { return None }; // TODO: error
+                i += ns;
+                let rows = rw.into_iter().map(|v| match v {
+                    Value::Array(row) => row,
+                    _ => todo!(), // TODO: error
+                }).collect();
+                (i, Value::Table { header: he, rows })
+            },
         })
     }
 
@@ -354,31 +367,37 @@ impl StreamingReader {
                 }
             },
             Expecting::TableHeader => {
-                if let Some((bt @ Token::Array(_), exp)) = decode_beginner(&mut d, ast.len())? {
-                    ast.push(bt);
-                    self.stack.pop();
-                    self.stack.push(Expecting::TableRows);
-                    self.stack.push(exp);
-                } else {
-                    panic!("expected table header (an array)");
+                match decode_beginner(&mut d, ast.len())? {
+                    None => return Err(decode::Error::end_of_input()),
+                    Some((bt @ Token::Array(_), exp)) => {
+                        ast.push(bt);
+                        self.stack.pop();
+                        self.stack.push(Expecting::TableRows);
+                        self.stack.push(exp);
+                    },
+                    v => panic!("expected table header (an array), found {v:?}"),
                 }
             },
             Expecting::TableRows => {
-                if let Some((bt @ Token::Array(_), exp)) = decode_beginner(&mut d, ast.len())? {
-                    ast.push(bt);
-                    self.stack.pop();
-                    self.stack.push(exp);
-                } else {
-                    panic!("expected table rows (an array)");
+                match decode_beginner(&mut d, ast.len())? {
+                    None => return Err(decode::Error::end_of_input()),
+                    Some((bt @ Token::Array(_), exp)) => {
+                        ast.push(bt);
+                        self.stack.pop();
+                        self.stack.push(exp);
+                    },
+                    _ => panic!("expected table rows (an array)"),
                 }
             },
             Expecting::TableRow(_) => {
-                if let Some((bt @ Token::Array(_), exp)) = decode_beginner(&mut d, ast.len())? {
-                    ast.push(bt);
-                    self.stack.pop();
-                    self.stack.push(exp);
-                } else {
-                    panic!("expected single table row (an array)");
+                match decode_beginner(&mut d, ast.len())? {
+                    None => return Err(decode::Error::end_of_input()),
+                    Some((bt @ Token::Array(_), exp)) => {
+                        ast.push(bt);
+                        self.stack.pop();
+                        self.stack.push(exp);
+                    }
+                    _ => panic!("expected single table row (an array)"),
                 }
             },
             Expecting::String(_, num) => {
