@@ -542,7 +542,7 @@ where
                     },
                 );
             } else {
-                renderer.with_translation(Vector::ZERO, |_| {});
+                renderer.with_translation(Vector::ZERO, |_| {}); // ???
             }
 
             renderer.fill_paragraph(

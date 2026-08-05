@@ -153,6 +153,7 @@ pub enum CS {
     Base,
     Box,
     WhiteBox,
+    GrayBox,
     FadingHighlight(f32),
     Custom(fn(&Theme) -> container::Style),
     Custom2(container::Style),
@@ -212,6 +213,17 @@ impl CS {
             CS::WhiteBox => container::Style {
                 text_color: Some(t.fg),
                 background: Some(Background::Color(t.white)),
+                border: Border {
+                    width: 1.,
+                    radius: RAD,
+                    color: t.bg(4),
+                },
+                shadow: Default::default(),
+                snap: true,
+            },
+            CS::GrayBox => container::Style {
+                text_color: Some(t.fg),
+                background: Some(Background::Color(t.bg(14))),
                 border: Border {
                     width: 1.,
                     radius: RAD,

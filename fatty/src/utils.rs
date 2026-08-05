@@ -87,8 +87,8 @@ impl Mode {
 
         fn txt<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
             mono(f)
-                .line_height(0.8)
-                .size(11.)
+                .line_height(0.75)
+                .size(10.)
                 .class(TextClass::Custom(|t: &Theme| t.white))
         }
 
@@ -135,7 +135,7 @@ impl Mode {
                         r, row![w, x]
                     ].align_x(alignment::Horizontal::Center)
                 )
-                    .padding(2.)
+                    .padding(1.)
                     .class(CS::Custom2(container::Style {
                         background: Some(Background::Color(colors::iced_color(bg))),
                         border: Border {

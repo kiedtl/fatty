@@ -29,7 +29,20 @@ use iced::futures::stream;
 use iced::window;
 use iced::{Event, Element, Task, Subscription, Padding, Length};
 use iced::keyboard::{self, key, Modifiers};
-use iced::widget::{container, Row, table::{self, Table}, Column, row, text::{Rich, Span}, column, text, text_input, responsive, space};
+use iced::widget::{
+    column,
+    container,
+    grid,
+    responsive,
+    row,
+    space,
+    table::{self, Table},
+    text,
+    text_input,
+    text::{Rich, Span},
+    Column,
+    Row,
+};
 use iced::advanced::text::Ellipsis;
 
 mod bolger;
@@ -618,45 +631,109 @@ impl App {
             }
         };
 
-        let listing = Table::new(
-            [
-                table::column(thead("mode"), |d: &MyDirEntry| {
-                    utils::Mode(d.mode).to_iced()
-                }),
-                // table::column(thead("user"), |d: &DirEntry| {
-                //     text(d.uname.unwrap_or("?".to_string()))
-                //         .ellipsis(Ellipsis::End)
-                // }),
-                table::column(thead("size"), |d: &MyDirEntry| {
-                    let e: Elem<'_> = if d.kind == FileType::Directory {
-                        space().into()
-                    } else {
-                        mono(utils::fmt_size(d.size))
-                            .into()
-                    };
-                    e
-                }),
-                table::column(thead("name"), |d: &MyDirEntry| {
-                    let class = match &self.listing_last_changed {
-                        Some((name, at)) if *name == d.raw_name && at.elapsed().as_millis() < 300 => {
-                            let f = (at.elapsed().as_millis() as f32 / 300.).powf(4.);
-                            CS::FadingHighlight(1. - f)
-                        },
-                        _ => CS::Base,
-                    };
-                    container(
-                        text(d.name.clone())
-                            .width(Length::Fill)
-                    )
-                        .padding(Padding { left: 2., right: 1., ..Default::default() })
-                        .class(class)
-                })
-                    .width(Length::Fill)
-            ],
-            &self.listing,
-        )
-            .width(Length::Fill)
-            .padding_y(1);
+        fn listing_item_class(app: &App, d: &MyDirEntry) -> CS {
+            match &app.listing_last_changed {
+                Some((name, at)) if *name == d.raw_name && at.elapsed().as_millis() < 300 => {
+                    let f = (at.elapsed().as_millis() as f32 / 300.).powf(4.);
+                    CS::FadingHighlight(1. - f)
+                },
+                _ => CS::Base,
+            }
+        }
+
+        fn listing_table<'a>(app: &'a App) -> Elem<'a> {
+            Table::new(
+                [
+                    table::column(/* thead("mode") */space(), |d: &MyDirEntry| {
+                        utils::Mode(d.mode).to_iced()
+                    }),
+                    table::column(/* thead("user") */space(), |d: &MyDirEntry| {
+                        text(d.uname.as_ref().map(|s| s.as_str()).unwrap_or("?"))
+                            .ellipsis(Ellipsis::End)
+                    }),
+                    table::column(/* thead("size") */space(), |d: &MyDirEntry| {
+                        let e: Elem<'_> = if d.kind == FileType::Directory {
+                            space().into()
+                        } else {
+                            mono(utils::fmt_size(d.size))
+                                .into()
+                        };
+                        e
+                    }),
+                    table::column(/* thead("name") */space(), |d: &MyDirEntry| {
+                        container(
+                            text(d.name.clone())
+                                .width(Length::Fill)
+                        )
+                            .padding(Padding { left: 2., right: 1., ..Default::default() })
+                            .class(listing_item_class(app, d))
+                    })
+                        .width(Length::Fill)
+                ],
+                &app.listing,
+            )
+                .width(Length::Fill)
+                .separator_x(0)
+                .separator_y(0)
+                .padding_y(0)
+                .padding_x(5)
+                .into()
+        }
+
+        fn listing_grid<'a>(app: &'a App) -> Elem<'a> {
+            responsive(move |sz| {
+                let widths = app.listing.iter()
+                    .map(|d| utils::measure_text(
+                            &d.name, std::f32::INFINITY,
+                            14., 1., iced::font::Font::default()
+                    ).0)
+                    .collect::<Vec<_>>();
+                let max = widths.iter().copied().fold(0., f32::max) * 1.2;
+                let cell_width = if max > sz.width * 0.12 {
+                    let mut widths = widths;
+                    widths.sort_by(|a, b| a.total_cmp(b));
+                    widths[widths.len() / 3 * 2]
+                } else {
+                    max
+                };
+
+                let all_same_uname = app.listing.len() > 0
+                    && app.listing.iter().skip(1).all(|it| app.listing[0].uname == it.uname);
+
+                grid(app.listing.iter().map(|d: &MyDirEntry| {
+                    container(mycolumn![
+                        container(
+                            text(d.name.clone())
+                                .ellipsis(Ellipsis::End)
+                        )
+                            .width(Length::Shrink)
+                            .class(listing_item_class(app, d)),
+                        mono(
+                            if d.kind == FileType::Directory {
+                                "".to_string()
+                            } else {
+                                utils::fmt_size(d.size)
+                            }
+                        ),
+                        if !all_same_uname =>
+                            text(d.uname.as_ref().map(|s| s.as_str()).unwrap_or("?"))
+                                .ellipsis(Ellipsis::End),
+                        utils::Mode(d.mode).to_iced()
+                    ])
+                        .clip(true)
+                        .class(CS::GrayBox)
+                        .padding(2)
+                        .into()
+                }))
+                    .spacing(2)
+                    .height(Length::Shrink)
+                    .fluid(cell_width)
+                    .into()
+            })
+                .width(Length::Fill)
+                .height(Length::Shrink)
+                .into()
+        }
 
         let mut jobs = Column::new()
             .spacing(1);
@@ -777,64 +854,61 @@ impl App {
             Message::Controller,
             container(
                 column![
-                    row![
-                        column![
-                            responsive(move |size| {
-                                self.vwidth.set(Some(size.width));
-                                space()
-                                    .height(1.)
-                                    .into()
-                            })
-                                .height(Length::Shrink)
-                                .width(Length::Fill),
-                            column![
-                                scrollable(
-                                    container(execs)
-                                        .padding(Padding {
-                                            right: 15.,
-                                            ..Default::default()
-                                        })
-                                )
-                                    .anchor_bottom()
-                                    .height(Length::Fill),
-                                input,
-                            ]
-                                .spacing(4.)
-                        ]
-                            .width(Length::FillPortion(2)),
-                        column![
-                            scrollable(
-                                container(listing)
-                                    .padding(Padding {
-                                        bottom: 5.,
-                                        top: 5.,
-                                        right: 15.,
-                                        left: 5.,
-                                    })
-                                    .width(Length::Fill)
-                                    .class(CS::WhiteBox)
-                            )
-                                .height(Length::FillPortion(2))
-                                .width(Length::Fill),
-                            scrollable(
-                                container(jobs)
-                                    .padding(Padding {
-                                        bottom: 5.,
-                                        top: 5.,
-                                        right: 15.,
-                                        left: 5.,
-                                    })
-                                    .width(Length::Fill)
-                                    .class(CS::WhiteBox)
-                            )
-                                .height(Length::FillPortion(1))
+                    column![
+                        scrollable(
+                            container(listing_grid(self))
+                                .padding(Padding {
+                                    bottom: 5.,
+                                    top: 5.,
+                                    right: 15.,
+                                    left: 5.,
+                                })
                                 .width(Length::Fill)
-                                .anchor_bottom()
-                        ]
-                            .spacing(4)
-                            .width(Length::FillPortion(1)),
+                                .class(CS::WhiteBox)
+                        )
+                            .height(Length::FillPortion(3))
+                            .width(Length::Fill),
+                        scrollable(
+                            container(jobs)
+                                .padding(Padding {
+                                    bottom: 5.,
+                                    top: 5.,
+                                    right: 15.,
+                                    left: 5.,
+                                })
+                                .width(Length::Fill)
+                                .class(CS::WhiteBox)
+                        )
+                            .height(Length::FillPortion(1))
+                            .width(Length::Fill)
+                            .anchor_bottom()
                     ]
-                        .spacing(4),
+                        .spacing(4)
+                        .height(Length::FillPortion(1)),
+                    column![
+                        responsive(move |size| {
+                            self.vwidth.set(Some(size.width));
+                            space()
+                                .height(1.)
+                                .into()
+                        })
+                            .height(Length::Shrink)
+                            .width(Length::Fill),
+                        column![
+                            scrollable(
+                                container(execs)
+                                    .padding(Padding {
+                                        right: 15.,
+                                        ..Default::default()
+                                    })
+                            )
+                                .anchor_bottom()
+                                .height(Length::Fill),
+                            input,
+                        ]
+                            .spacing(4.)
+                    ]
+                        .height(Length::FillPortion(3)),
                     container(
                         row![
                             mono(self.get_env("USER", "?").to_string_lossy()),
@@ -1026,7 +1100,7 @@ struct MyDirEntry {
     size: u64,
     raw_name: OsString,
     name: String,
-    //uname: Option<String>,
+    uname: Option<String>,
 }
 
 fn listing() -> Vec<MyDirEntry> {
@@ -1038,14 +1112,14 @@ fn listing() -> Vec<MyDirEntry> {
 
             let mode = met.permissions().mode();
             let kind = FileType::from_raw_mode(mode);
-            // let uname = unsafe {
-            //     let r = libc::getpwuid(met.uid());
-            //     (r.is_null()).then(||
-            //         std::ffi::CStr::from_ptr((*r).pw_name)
-            //             .to_string_lossy()
-            //             .to_string()
-            //     )
-            // };
+            let uname = unsafe {
+                let r = libc::getpwuid(met.uid());
+                (!r.is_null()).then(||
+                    std::ffi::CStr::from_ptr((*r).pw_name)
+                        .to_string_lossy()
+                        .to_string()
+                )
+            };
             let size = met.len();
 
             let raw_name = d.file_name();
@@ -1054,7 +1128,7 @@ fn listing() -> Vec<MyDirEntry> {
                 name.push('/');
             }
 
-            MyDirEntry { mode, kind, /*uname,*/ size, raw_name, name }
+            MyDirEntry { mode, kind, uname, size, raw_name, name }
         })
         .collect::<Vec<_>>();
     entries.sort_by_key(|i| i.name.clone());
