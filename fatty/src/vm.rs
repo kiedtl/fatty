@@ -1,8 +1,11 @@
+use std::fs;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use std::os::unix::process::CommandExt as _;
-use std::ffi::OsString;
-use std::collections::HashMap;
 
 use crate::{ExitReason, Execution};
 use crate::parser::*;
@@ -18,15 +21,28 @@ use tokio::sync::watch;
 //     PreviousSucceeded,
 // }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Command2 {
+    pub path: PathBuf,
+    pub orig: String,
+    pub args: Vec<Token>,
+}
+
+impl Command2 {
+    pub fn to_string(&self) -> String {
+        format!("{} {}", self.orig, self.args.iter().map(|t| t.to_string()).join(" "))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Instr {
     ChangeDir { argv: Vec<Token> },
     Run {
-        command: Command,
+        command: Command2,
         // cond: RunCondition,
     },
     RunSimplePipeline {
-        commands: Vec<Command>,
+        commands: Vec<Command2>,
         // cond: RunCondition,
     },
     CallAsync {
@@ -40,56 +56,106 @@ pub struct Block {
     pub contents: Vec<Instr>,
 }
 
-pub fn compile(ast: &[Ast]) -> Vec<Block> {
+#[derive(Clone, Debug)]
+pub enum CompileError {
+    CommandNotFound(LineCol, String),
+}
+
+pub fn compile(path_var: &OsStr, ast: &[Ast]) -> Result<Vec<Block>, CompileError> {
     let mut blocks = vec![Block { contents: Vec::new() }];
 
     let mut base_block = Vec::new();
     for ast in ast {
-        compile_ast(ast, &mut base_block, &mut blocks);
+        compile_ast(path_var, ast, &mut base_block, &mut blocks)?;
     }
 
     base_block.push(Instr::DoneProgram);
     blocks[0].contents = base_block;
 
-    blocks
+    Ok(blocks)
 }
 
-fn compile_ast(ast: &Ast, out: &mut Vec<Instr>, blocks: &mut Vec<Block>) {
+fn compile_ast(
+    path_var: &OsStr,
+    ast: &Ast,
+    out: &mut Vec<Instr>,
+    blocks: &mut Vec<Block>
+) -> Result<(), CompileError>
+{
     match ast {
-        Ast::Stmt(Stmt::Command(command)) => {
+        Ast::Stmt(_lc, Stmt::Command(command)) => {
             if let Some(command_str) = command.argv.get(0) {
                 match command_str.as_str() {
                     "cd" => out.push(Instr::ChangeDir { argv: command.argv[1..].to_vec() }),
-                    _ => out.push(Instr::Run { command: command.clone() }),
+                    _ => {
+                        let c = command_str.to_string();
+                        let path = resolve(path_var, &c)
+                            .ok_or_else(|| CompileError::CommandNotFound(command.lc, c.clone()))?;
+                        let args = command.argv.iter().skip(1).cloned().collect::<Vec<_>>();
+                        let orig = c.clone();
+                        out.push(Instr::Run { command: Command2 { orig, path, args } });
+                    },
                 }
             }
         },
-        Ast::Stmt(Stmt::Pipeline(Pipeline { items })) => {
+        Ast::Stmt(_lc, Stmt::Pipeline(Pipeline { items })) => {
             let is_simple = !items.iter().any(|c| matches!(c, SubOrCommand::Sub(_)));
 
             if is_simple {
                 out.push(Instr::RunSimplePipeline {
                     commands: items.into_iter()
                         .map(|c| match c {
-                            SubOrCommand::Command(c) => c.clone(),
+                            SubOrCommand::Command(c) => {
+                                let cmd = c.argv[0].to_string();
+                                let path = resolve(path_var, &cmd)
+                                    .ok_or_else(|| CompileError::CommandNotFound(c.lc, cmd.clone()))?;
+                                let args = c.argv.iter().skip(1).cloned().collect::<Vec<_>>();
+                                let orig = cmd.clone();
+                                Ok(Command2 { orig, args, path })
+                            },
                             _ => unreachable!(),
                         })
-                        .collect()
+                        .collect::<Result<Vec<_>, _>>()?
                 });
             } else {
                 todo!()
             }
         }
-        Ast::Stmt(Stmt::Background(ast)) => {
+        Ast::Stmt(_lc, Stmt::Background(ast)) => {
             out.push(Instr::CallAsync { block: blocks.len() });
 
             let mut b = Block { contents: Vec::new() };
-            compile_ast(ast, &mut b.contents, blocks);
+            compile_ast(path_var, ast, &mut b.contents, blocks)?;
             b.contents.push(Instr::DoneProgram);
             blocks.push(b);
         },
         _ => todo!(),
     }
+
+    Ok(())
+}
+
+fn resolve(path_var: &OsStr, cmd: &str) -> Option<PathBuf> {
+    for path in path_var.to_str()?.split(':') {
+        match fs::read_dir(path) {
+            Ok(iter) => {
+                for item in iter {
+                    let Ok(item) = item else { continue };
+                    if item.file_name() == OsStr::new(cmd)
+                        && item.metadata()
+                            .map(|m|
+                                m.file_type().is_file() && m.permissions().mode() & 0o100 != 0
+                            )
+                            .unwrap_or(false)
+                    {
+                        return Some(item.path().to_owned());
+                    }
+                }
+            },
+            Err(_) => continue,
+        }
+    }
+    None
 }
 
 pub struct Job {
@@ -107,15 +173,15 @@ pub enum VMStatus {
     #[default]
     None,
     Waiting {
-        command: Command,
+        command: Command2,
         pid: Pid,
     },
     Done {
-        command: Command,
+        command: Command2,
         reason: ExitReason,
     },
     Resolved {
-        command: Option<Command>,
+        command: Option<Command2>,
         reason: Option<ExitReason>,
     }
 }
@@ -157,7 +223,7 @@ impl VM {
                 }
             }
             Instr::Run { command } => {
-                let (cmd, args) = prepare_invocation(&command.argv);
+                let (cmd, args) = prepare_invocation(&command);
                 let mut pcmd = std::process::Command::new(&cmd);
                 pcmd.envs(&*self.env);
                 pcmd.args(args);
@@ -209,7 +275,7 @@ impl VM {
                         writer_obj = Some(fw_obj);
                     }
 
-                    let (cmd, args) = prepare_invocation(&command.argv);
+                    let (cmd, args) = prepare_invocation(&command);
                     let mut command = std::process::Command::new(cmd);
                     command.envs(&*self.env);
                     command.args(args);
@@ -331,13 +397,13 @@ pub fn print_program(p: &[Block]) {
             match instr {
                 Instr::ChangeDir { argv }
                     => println!("  - cd {}", argv.iter().map(|t| t.to_string()).join(" ")),
-                Instr::Run { command: Command { argv } }
-                    => println!("  - run {}", argv.iter().map(|t| t.to_string()).join(" ")),
+                Instr::Run { command: Command2 { path, args, .. } }
+                    => println!("  - run {}: {}", path.display(), args.iter().map(|t| t.to_string()).join(" ")),
                 Instr::RunSimplePipeline { commands }
                     => {
                         println!("  - create_pipe");
                         for command in commands {
-                            println!("  - run {}", command.argv.iter().map(|t| t.to_string()).join(" "));
+                            println!("  - run {}: {}", command.path.display(), command.args.iter().map(|t| t.to_string()).join(" "));
                         }
                     },
                 Instr::CallAsync { block } => println!("  - call_async {block}"),
@@ -401,10 +467,8 @@ fn prepare_args(argv: &[Token]) -> impl Iterator<Item = String> {
         .flatten()
 }
 
-fn prepare_invocation(argv: &[Token]) -> (String, impl Iterator<Item = String>) {
-    let mut args = prepare_args(argv);
-    let command = args.next().unwrap();
-    (command, args)
+fn prepare_invocation(c: &Command2) -> (&Path, impl Iterator<Item = String>) {
+    (&c.path, prepare_args(&c.args))
 }
 
 fn expand_token(token: &str) -> Vec<String> {

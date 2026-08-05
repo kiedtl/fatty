@@ -46,6 +46,7 @@ mod widgets;
 use helpers::*;
 use styles::CS;
 use vm::VMStatus;
+use parser::LineCol;
 use widgets::scrollable::scrollable;
 use widgets::input::input;
 use widgets::controller;
@@ -59,26 +60,26 @@ fn set_pty_output(w: &OwnedFd) {
 
 #[macro_export]
 macro_rules! outln {
-    ($fmt:literal $(, $e:expr)*) => {
+    ($fmt:literal $(, $e:expr)*) => { {
         if let Ok(mut guard) = crate::PTY_MASTER.lock() {
             use std::io::Write;
             if let Some(w) = guard.as_mut() {
                 let _ = writeln!(w, $fmt, $($e,)*);
             }
         }
-    }
+    } }
 }
 
 #[macro_export]
 macro_rules! out {
-    ($fmt:literal $(, $e:expr)*) => {
+    ($fmt:literal $(, $e:expr)*) => { {
         if let Ok(mut guard) = crate::PTY_MASTER.lock() {
             use std::io::Write;
             if let Some(w) = guard.as_mut() {
                 let _ = write!(w, $fmt, $($e,)*);
             }
         }
-    }
+    } }
 }
 
 pub type Elem<'a> = Element<'a, Message, styles::Theme, iced::Renderer>;
@@ -246,6 +247,7 @@ struct App {
     slave: OwnedFd,
     control: ControlState,
     input: String,
+    input_compile_error: Option<LineCol>,
     execs: Vec<Execution>,
     theme: styles::Theme,
     env: HashMap<OsString, OsString>,
@@ -265,6 +267,10 @@ impl Drop for App {
 }
 
 impl App {
+    fn get_env<'a>(&'a self, s: &str, fallback: &'a str) -> &'a OsStr {
+        self.env.get(OsStr::new(s)).map_or(OsStr::new(fallback), |v| v)
+    }
+
     fn theme(&self) -> styles::Theme {
         self.theme
     }
@@ -293,6 +299,7 @@ impl App {
             Self {
                 control: ControlState::new(),
                 input: String::new(),
+                input_compile_error: None,
                 listing: listing(),
                 listing_last_changed: None,
                 execs: Vec::new(),
@@ -315,13 +322,32 @@ impl App {
         match message {
             Message::None => { }
             Message::Animate => { }
-            Message::Input(s) => self.input = s,
+            Message::Input(s) => {
+                self.input = s;
+                self.input_compile_error = None;
+                match parser::parse_str(&self.input) {
+                    Ok(parsed) => {
+                        let path_var = self.get_env("PATH", "");
+                        match vm::compile(path_var, &parsed) {
+                            Ok(_) => (),
+                            Err(vm::CompileError::CommandNotFound(lc, s)) => {
+                                self.input_compile_error = Some(lc);
+                            }
+                        }
+                    }
+                    Err(_) => (),
+                }
+            },
             Message::Run => {
                 self.control.history_cursor = None;
                 self.control.mode = ControlMode::Term;
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
-                        let program = vm::compile(&parsed);
+                        let path_var = self.get_env("PATH", "");
+                        let program = match vm::compile(path_var, &parsed) {
+                            Ok(p) => p,
+                            Err(_) => return Task::none(),
+                        };
                         //vm::print_program(&program);
 
                         let (font_width, font_height) = utils::measure_text(
@@ -734,6 +760,10 @@ impl App {
 
         let mut input = input(self.control.mode, "rm -rf /", &self.input);
 
+        if let Some(LineCol(_, s, e)) = self.input_compile_error {
+            input.add_annotation(s, e);
+        }
+
         if let Some(last) = self.execs.last() && !last.vm.done {
             // Input disabled.
         } else {
@@ -807,11 +837,7 @@ impl App {
                         .spacing(4),
                     container(
                         row![
-                            mono(
-                                self.env.get(OsStr::new("USER"))
-                                    .map_or(OsStr::new("?"), |v| v)
-                                    .to_string_lossy(),
-                            ),
+                            mono(self.get_env("USER", "?").to_string_lossy()),
                             text("@"),
                             mono(rustix::system::uname().nodename().to_string_lossy().to_string()),
                             text(" on "),

@@ -30,6 +30,11 @@ use iced::{
 use crate::styles::Theme as MyTheme;
 use crate::ControlMode;
 
+struct Annotation {
+    s: usize,
+    e: usize,
+}
+
 pub fn input<'a, Message, Theme, Renderer>(
     mode: ControlMode,
     placeholder: &str,
@@ -65,6 +70,7 @@ where
     icon: Option<Icon<Renderer::Font>>,
     class: Theme::Class<'a>,
     last_status: Option<Status>,
+    annotations: Vec<Annotation>,
 }
 
 /// The default [`Padding`] of a [`TextInput`].
@@ -96,6 +102,7 @@ where
             icon: None,
             class: Theme::default(),
             last_status: None,
+            annotations: Vec::new(),
         }
     }
 
@@ -210,6 +217,10 @@ where
     pub fn class(mut self, class: impl Into<Theme::Class<'a>>) -> Self {
         self.class = class.into();
         self
+    }
+
+    pub fn add_annotation(&mut self, s: usize, e: usize) {
+        self.annotations.push(Annotation { s, e });
     }
 
     /// Lays out the [`TextInput`], overriding its [`Value`] if provided.
@@ -501,6 +512,27 @@ where
 
             let alignment_offset =
                 alignment_offset(text_bounds.width, paragraph.min_width(), self.alignment);
+
+            for annotation in &self.annotations {
+                let paragraph = state.value.raw();
+                let (start_x, _) = measure_cursor_and_scroll_offset(paragraph, text_bounds, annotation.s);
+                let (end_x, _) = measure_cursor_and_scroll_offset(paragraph, text_bounds, annotation.e);
+
+                renderer.with_translation(Vector::new(alignment_offset - offset, 0.0), |renderer| {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle {
+                                x: text_bounds.x + start_x.max(0.),
+                                y: text_bounds.y + text_bounds.height - 2.0,
+                                width: (end_x - start_x).max(0.),
+                                height: 2.0,
+                            },
+                            ..renderer::Quad::default()
+                        },
+                        Color::from_rgb(0.9, 0.4, 0.3),
+                    );
+                });
+            }
 
             if let Some((cursor, color)) = cursor {
                 renderer.with_translation(

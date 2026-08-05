@@ -8,6 +8,9 @@ use pest_derive::Parser;
 #[grammar = "src/grammar.pest"]
 struct CommandParser;
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct LineCol(pub usize, pub usize, pub usize);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     String(String),
@@ -32,6 +35,7 @@ impl Token {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
+    pub lc: LineCol,
     pub argv: Vec<Token>,
 }
 
@@ -78,7 +82,7 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ast {
-    Stmt(Stmt),
+    Stmt(LineCol, Stmt),
 }
 
 fn unescape_dq(s: &str) -> String {
@@ -111,7 +115,14 @@ fn unescape_unquoted(s: &str) -> String {
 
 fn parse_command<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Command, String> {
     let mut argv = Vec::new();
+    let mut lc = None;
     for pair in pairs {
+        if lc.is_none() {
+            let l = pair.line_col().0;
+            let s = pair.as_span();
+            lc = Some(LineCol(l, s.start(), s.end()));
+        }
+
         match pair.as_rule() {
             Rule::single_quoted => argv.push(Token::String(pair.as_str().to_owned())),
             Rule::double_quoted => argv.push(Token::String(unescape_dq(pair.as_str()))),
@@ -119,31 +130,37 @@ fn parse_command<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Comm
             _ => unreachable!(),
         }
     }
-    Ok(Command { argv })
+
+    let lc = lc.unwrap();
+    Ok(Command { lc, argv })
 }
 
 fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
+    let l = pair.line_col().0;
+    let s = pair.as_span();
+    let lc = LineCol(l, s.start(), s.end());
+
     Ok(match pair.as_rule() {
         Rule::program => unreachable!(),
 
         Rule::stmt => parse_ast(pair.into_inner().next().unwrap())?,
-        Rule::background => Ast::Stmt(Stmt::Background(Box::new(parse_ast(pair.into_inner().next().unwrap())?))),
+        Rule::background => Ast::Stmt(lc, Stmt::Background(Box::new(parse_ast(pair.into_inner().next().unwrap())?))),
         Rule::chain => todo!(),
         Rule::pipeline => {
             let mut items = Vec::new();
 
             for pair in pair.into_inner() {
                 match parse_ast(pair)? {
-                    Ast::Stmt(Stmt::Command(c)) => items.push(SubOrCommand::Command(c)),
-                    Ast::Stmt(Stmt::Sub(s)) => items.push(SubOrCommand::Sub(s)),
+                    Ast::Stmt(_, Stmt::Command(c)) => items.push(SubOrCommand::Command(c)),
+                    Ast::Stmt(_, Stmt::Sub(s)) => items.push(SubOrCommand::Sub(s)),
                     _ => unreachable!(),
                 }
             }
 
-            Ast::Stmt(Stmt::Pipeline(Pipeline { items }))
+            Ast::Stmt(lc, Stmt::Pipeline(Pipeline { items }))
         },
-        Rule::sub => Ast::Stmt(Stmt::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?))),
-        Rule::command => Ast::Stmt(Stmt::Command(parse_command(pair.into_inner())?)),
+        Rule::sub => Ast::Stmt(lc, Stmt::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?))),
+        Rule::command => Ast::Stmt(lc, Stmt::Command(parse_command(pair.into_inner())?)),
 
         Rule::token => unreachable!(),
         Rule::single_quoted => unreachable!(),
