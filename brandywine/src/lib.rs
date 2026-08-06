@@ -1,3 +1,6 @@
+// TODO: do we really need a separate map type? Seems redundant when a single-row table could be
+// used.
+
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -264,7 +267,7 @@ impl StreamingReader {
                     Some((Token::Array(n), Expecting::Array(astlen, n)))
                 },
                 Type::Map | Type::MapIndef => {
-                    let n = d.map()?;
+                    let n = d.map()?.map(|n| n * 2);
                     Some((Token::Map(n), Expecting::Map(astlen, n)))
                 }
                 Type::Tag => {
@@ -789,10 +792,10 @@ impl io::Write for Fd3 {
 
 pub struct StdoutEncoder(pub encode::Encoder<encode::write::Writer<BufWriter<Fd3>>>);
 
-pub fn stdout_writer() -> StdoutEncoder {
-    let f = Fd3(fd3_fd().unwrap()); // TODO: fallback to stdout
+pub fn stdout_writer() -> Option<StdoutEncoder> {
+    let f = Fd3(fd3_fd()?); // TODO: fallback to stdout
     let writer = encode::write::Writer::new(BufWriter::new(f));
-    StdoutEncoder(encode::Encoder::new(writer))
+    Some(StdoutEncoder(encode::Encoder::new(writer)))
 }
 
 pub struct StreamingTable<'a, W: encode::Write> {

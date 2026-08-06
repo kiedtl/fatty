@@ -35,14 +35,20 @@ impl Command2 {
 }
 
 #[derive(Debug, Clone)]
+pub enum RunPipelineItem {
+    Command(Command2),
+    // Query(Query),
+}
+
+#[derive(Debug, Clone)]
 pub enum Instr {
     ChangeDir { argv: Vec<Token> },
     Run {
         command: Command2,
         // cond: RunCondition,
     },
-    RunSimplePipeline {
-        commands: Vec<Command2>,
+    RunPipeline {
+        items: Vec<RunPipelineItem>,
         // cond: RunCondition,
     },
     CallAsync {
@@ -61,12 +67,12 @@ pub enum CompileError {
     CommandNotFound(LineCol, String),
 }
 
-pub fn compile(path_var: &OsStr, ast: &[Ast]) -> Result<Vec<Block>, CompileError> {
+pub fn compile(path: &[PathBuf], ast: &[Ast]) -> Result<Vec<Block>, CompileError> {
     let mut blocks = vec![Block { contents: Vec::new() }];
 
     let mut base_block = Vec::new();
     for ast in ast {
-        compile_ast(path_var, ast, &mut base_block, &mut blocks)?;
+        compile_ast(path, ast, &mut base_block, &mut blocks)?;
     }
 
     base_block.push(Instr::DoneProgram);
@@ -76,7 +82,7 @@ pub fn compile(path_var: &OsStr, ast: &[Ast]) -> Result<Vec<Block>, CompileError
 }
 
 fn compile_ast(
-    path_var: &OsStr,
+    path: &[PathBuf],
     ast: &Ast,
     out: &mut Vec<Instr>,
     blocks: &mut Vec<Block>
@@ -89,7 +95,7 @@ fn compile_ast(
                     "cd" => out.push(Instr::ChangeDir { argv: command.argv[1..].to_vec() }),
                     _ => {
                         let c = command_str.to_string();
-                        let path = resolve(path_var, &c)
+                        let path = resolve(path, &c)
                             .ok_or_else(|| CompileError::CommandNotFound(command.lc, c.clone()))?;
                         let args = command.argv.iter().skip(1).cloned().collect::<Vec<_>>();
                         let orig = c.clone();
@@ -99,21 +105,25 @@ fn compile_ast(
             }
         },
         Ast::Stmt(_lc, Stmt::Pipeline(Pipeline { items })) => {
-            let is_simple = !items.iter().any(|c| matches!(c, SubOrCommand::Sub(_)));
+            let is_simple = !items.iter().any(|c| matches!(c, PipelineItem::Sub(_)));
 
             if is_simple {
-                out.push(Instr::RunSimplePipeline {
-                    commands: items.into_iter()
+                out.push(Instr::RunPipeline {
+                    items: items.into_iter()
                         .map(|c| match c {
-                            SubOrCommand::Command(c) => {
+                            PipelineItem::Command(c) => {
+                                // FIXME: handle "cd" here
                                 let cmd = c.argv[0].to_string();
-                                let path = resolve(path_var, &cmd)
+                                let path = resolve(path, &cmd)
                                     .ok_or_else(|| CompileError::CommandNotFound(c.lc, cmd.clone()))?;
                                 let args = c.argv.iter().skip(1).cloned().collect::<Vec<_>>();
                                 let orig = cmd.clone();
-                                Ok(Command2 { orig, args, path })
+                                Ok(RunPipelineItem::Command(Command2 { orig, args, path }))
                             },
-                            _ => unreachable!(),
+                            // PipelineItem::Query(q) => {
+                            //     Ok(RunPipelineItem::Query(q.clone()))
+                            // },
+                            PipelineItem::Sub(_) => todo!(),
                         })
                         .collect::<Result<Vec<_>, _>>()?
                 });
@@ -125,7 +135,7 @@ fn compile_ast(
             out.push(Instr::CallAsync { block: blocks.len() });
 
             let mut b = Block { contents: Vec::new() };
-            compile_ast(path_var, ast, &mut b.contents, blocks)?;
+            compile_ast(path, ast, &mut b.contents, blocks)?;
             b.contents.push(Instr::DoneProgram);
             blocks.push(b);
         },
@@ -135,8 +145,8 @@ fn compile_ast(
     Ok(())
 }
 
-fn resolve(path_var: &OsStr, cmd: &str) -> Option<PathBuf> {
-    for path in path_var.to_str()?.split(':') {
+fn resolve(paths: &[PathBuf], cmd: &str) -> Option<PathBuf> {
+    for path in paths {
         match fs::read_dir(path) {
             Ok(iter) => {
                 for item in iter {
@@ -144,7 +154,7 @@ fn resolve(path_var: &OsStr, cmd: &str) -> Option<PathBuf> {
                     if item.file_name() == OsStr::new(cmd)
                         && item.metadata()
                             .map(|m|
-                                m.file_type().is_file() && m.permissions().mode() & 0o100 != 0
+                                !m.file_type().is_dir() && m.permissions().mode() & 0o100 != 0
                             )
                             .unwrap_or(false)
                     {
@@ -244,7 +254,7 @@ impl VM {
                     sender.send(VMStatus::Waiting { pid, command: command.clone() }).unwrap();
                 }
             },
-            Instr::RunSimplePipeline { commands } => {
+            Instr::RunPipeline { items } => {
                 use std::process::Stdio;
 
                 let mut reader;
@@ -257,7 +267,8 @@ impl VM {
 
                 let mut last_pid = None;
 
-                for (i, command) in commands.iter().enumerate() {
+                for (i, item) in items.iter().enumerate() {
+                    let RunPipelineItem::Command(command) = item else { panic!("CLAUDE") };
                     let mut keep = Vec::<OwnedFd>::new();
                     reader = next_reader;
                     next_reader = None;
@@ -265,7 +276,7 @@ impl VM {
                     reader_obj = next_reader_obj;
                     next_reader_obj = None;
 
-                    if i < commands.len() - 1 {
+                    if i < items.len() - 1 {
                         let (fr, fw) = std::io::pipe().unwrap();
                         next_reader = Some(fr);
                         writer = Some(fw);
@@ -315,10 +326,11 @@ impl VM {
                     std::mem::drop(keep);
                 }
 
+                let RunPipelineItem::Command(last) = items.last().unwrap() else { panic!("CLAUDE") };
                 self.waiting_on = last_pid;
                 if let Some(sender) = &self.status {
                     sender.send(VMStatus::Waiting {
-                        command: commands.last().unwrap().clone(),
+                        command: last.clone(),
                         pid: last_pid.unwrap(),
                     }).unwrap();
                 }
@@ -399,11 +411,14 @@ pub fn print_program(p: &[Block]) {
                     => println!("  - cd {}", argv.iter().map(|t| t.to_string()).join(" ")),
                 Instr::Run { command: Command2 { path, args, .. } }
                     => println!("  - run {}: {}", path.display(), args.iter().map(|t| t.to_string()).join(" ")),
-                Instr::RunSimplePipeline { commands }
+                Instr::RunPipeline { items }
                     => {
                         println!("  - create_pipe");
-                        for command in commands {
-                            println!("  - run {}: {}", command.path.display(), command.args.iter().map(|t| t.to_string()).join(" "));
+                        for item in items {
+                            match item {
+                                RunPipelineItem::Command(c) => println!("  - run {}: {}", c.path.display(), c.args.iter().map(|t| t.to_string()).join(" ")),
+                                // RunPipelineItem::Query(q) => println!("  - query {}", q.items.iter().map(|t| t.to_string()).join(" ")),
+                            }
                         }
                     },
                 Instr::CallAsync { block } => println!("  - call_async {block}"),

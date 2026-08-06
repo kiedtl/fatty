@@ -7,8 +7,8 @@ default-run = "fatty"
 [dependencies]
 bitflags = "2.11.0"
 brandywine = { path = "../brandywine" }
+clap = { version = "4.6.0", features = ["derive"] }
 futures = "0.3.32"
-#brush-core = "0.4.0"
 glob = "0.3.3"
 iced = { git = "https://github.com/iced-rs/iced", rev = "ac1b2c7123ad82643482c0b3a4a776246c966697", features = [ "advanced", "image", "canvas", "lazy", "qr_code", "tokio" ]}
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "webp"] }
@@ -18,10 +18,10 @@ libc = "0.2.184"
 pest = "2.8.6"
 pest_derive = "2.8.6"
 raw-window-handle = "0.6"
-rustix = { version = "1.1.4", features = ["net"] }
 rustix-openpty = "0.2.0"
+rustix = { version = "1.1.4", features = ["net"] }
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.51.0", features = ["sync"] }
 unicode-segmentation = "1.13.2"
-#smol = "2.0"
 vte = { version = "0.15.0", features = ["bitflags", "ansi"] }
+anyhow = "1.0.104"

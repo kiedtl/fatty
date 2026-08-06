@@ -10,11 +10,12 @@ command       =  { token+ }
 
 connector     =  { "&&" | "||" }
 
-token         = _{ single_quoted | double_quoted | unquoted }
+token         = _{ single_quoted | double_quoted | unquoted } // | var }
+// var           =  { "$" ~ ('a'..'z' | 'A'..'Z' | '0'..'9')+ }
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 double_quoted = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
 unquoted      = @{
-    ( !(" " | "\t" | "\n" | "'" | "\"" | "\\" | "|" | "&" | "(" | ")") ~ ANY
+    ( !("$" | " " | "\t" | "\n" | "'" | "\"" | "\\" | "|" | "&" | "(" | ")") ~ ANY
     | "\\" ~ ANY
     )+
 }

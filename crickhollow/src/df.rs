@@ -33,7 +33,7 @@ pub fn main() {
 fn run(args: &Cli) -> Result<()> {
     let base = if args.human { Some(1024) } else { None };
 
-    if true {
+    if std::env::var_os("FATTY").is_some() {
         let (h3, h4, h5, h6) = if args.inodes {
             ("inodes", "iused", "ifree", "iuse%")
         } else {
@@ -43,7 +43,7 @@ fn run(args: &Cli) -> Result<()> {
             )
         };
 
-        let mut writer = bwine::stdout_writer();
+        let mut writer = bwine::stdout_writer().unwrap();
         let mut stt = bwine::stream_table(&mut writer.0, ["filesystem", "type", h3, h4, h5, h6, "mountpoint"]).unwrap();
 
         for m in readmounts()? {

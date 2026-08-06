@@ -33,6 +33,12 @@ impl Token {
     }
 }
 
+// #[derive(Debug, Clone, PartialEq)]
+// pub struct Query {
+//     pub lc: LineCol,
+//     pub items: Vec<Token>,
+// }
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
     pub lc: LineCol,
@@ -50,7 +56,7 @@ impl Command {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pipeline {
-    pub items: Vec<SubOrCommand>,
+    pub items: Vec<PipelineItem>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,9 +72,10 @@ pub enum Connector {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SubOrCommand {
+pub enum PipelineItem {
     Command(Command),
     Sub(Box<Ast>),
+    // Query(Query),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +85,7 @@ pub enum Stmt {
     Sub(Box<Ast>),
     Background(Box<Ast>),
     Command(Command),
+    // Query(Query),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,7 +121,7 @@ fn unescape_unquoted(s: &str) -> String {
     out
 }
 
-fn parse_command<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Command, String> {
+fn parse_tokens<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<(LineCol, Vec<Token>), String> {
     let mut argv = Vec::new();
     let mut lc = None;
     for pair in pairs {
@@ -132,8 +140,18 @@ fn parse_command<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Comm
     }
 
     let lc = lc.unwrap();
+    Ok((lc, argv))
+}
+
+fn parse_command<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Command, String> {
+    let (lc, argv) = parse_tokens(pairs)?;
     Ok(Command { lc, argv })
 }
+
+// fn parse_query<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Query, String> {
+//     let (lc, items) = parse_tokens(pairs)?;
+//     Ok(Query { lc, items })
+// }
 
 fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
     let l = pair.line_col().0;
@@ -151,14 +169,16 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
 
             for pair in pair.into_inner() {
                 match parse_ast(pair)? {
-                    Ast::Stmt(_, Stmt::Command(c)) => items.push(SubOrCommand::Command(c)),
-                    Ast::Stmt(_, Stmt::Sub(s)) => items.push(SubOrCommand::Sub(s)),
+                    Ast::Stmt(_, Stmt::Command(c)) => items.push(PipelineItem::Command(c)),
+                    Ast::Stmt(_, Stmt::Sub(s)) => items.push(PipelineItem::Sub(s)),
+                    // Ast::Stmt(_, Stmt::Query(q)) => items.push(PipelineItem::Query(q)),
                     _ => unreachable!(),
                 }
             }
 
             Ast::Stmt(lc, Stmt::Pipeline(Pipeline { items }))
         },
+        // Rule::query => Ast::Stmt(lc, Stmt::Query(parse_query(pair.into_inner())?)),
         Rule::sub => Ast::Stmt(lc, Stmt::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?))),
         Rule::command => Ast::Stmt(lc, Stmt::Command(parse_command(pair.into_inner())?)),
 

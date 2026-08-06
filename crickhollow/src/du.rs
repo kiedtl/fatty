@@ -88,7 +88,7 @@ fn run(args: &Cli) -> Result<()> {
     let mut gt = 0u64;
 
     if std::env::var_os("FATTY").is_some() {
-        let mut bw = bwine::stdout_writer();
+        let mut bw = bwine::stdout_writer().unwrap();
         let mut stt = bwine::stream_table(&mut bw.0, ["size", "path"])?;
 
         for p in paths {

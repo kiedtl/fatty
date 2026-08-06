@@ -7,6 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::DirEntry;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -264,6 +265,7 @@ struct App {
     execs: Vec<Execution>,
     theme: styles::Theme,
     env: HashMap<OsString, OsString>,
+    path: Vec<PathBuf>,
 
     listing: Vec<MyDirEntry>,
     listing_last_changed: Option<(OsString, Instant)>,
@@ -289,14 +291,6 @@ impl App {
     }
 
     fn new() -> (Self, Task<Message>) {
-        //let (_id, open) = window::open(window::Settings::default());
-
-        // let shell = tokio::task::block_in_place(|| {
-        //     tokio::runtime::Handle::current().block_on(async {
-        //         Shell::new(Default::default()).await.unwrap()
-        //     })
-        // });
-
         let pty = rustix_openpty::openpty(None, None).unwrap();
         let master_flags = rustix::fs::fcntl_getfl(&pty.controller).unwrap();
         rustix::fs::fcntl_setfl(
@@ -307,6 +301,18 @@ impl App {
 
         let mut env: HashMap<_, _> = std::env::vars_os().collect();
         env.insert("FATTY".into(), "normal0".into());
+
+        let mut exe_path = PathBuf::from(std::env::current_exe().unwrap());
+        exe_path.pop();
+
+        let path_var_str = env.get(OsStr::new("PATH")).map_or(OsStr::new(""), |v| v);
+        let mut path = path_var_str
+            .as_encoded_bytes()
+            .split(|n| *n == b':')
+            .map(|seg| Path::new(OsStr::from_bytes(seg)).to_owned())
+            .collect::<Vec<_>>();
+        path.insert(0, exe_path.join("fatty_bin/tools"));
+        path.insert(0, exe_path.join("fatty_bin/crickhollow"));
 
         (
             Self {
@@ -322,6 +328,7 @@ impl App {
                 //shell: Arc::new(TokioMutex::new(shell)),
                 vwidth: cell::Cell::new(None),
                 env,
+                path,
             },
             iced::font::set_defaults(iced::Font::new("Atkinson Hyperlegible Next"), 16.),
         )
@@ -340,10 +347,9 @@ impl App {
                 self.input_compile_error = None;
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
-                        let path_var = self.get_env("PATH", "");
-                        match vm::compile(path_var, &parsed) {
+                        match vm::compile(&self.path, &parsed) {
                             Ok(_) => (),
-                            Err(vm::CompileError::CommandNotFound(lc, s)) => {
+                            Err(vm::CompileError::CommandNotFound(lc, _)) => {
                                 self.input_compile_error = Some(lc);
                             }
                         }
@@ -356,8 +362,7 @@ impl App {
                 self.control.mode = ControlMode::Term;
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
-                        let path_var = self.get_env("PATH", "");
-                        let program = match vm::compile(path_var, &parsed) {
+                        let program = match vm::compile(&self.path, &parsed) {
                             Ok(p) => p,
                             Err(_) => return Task::none(),
                         };
@@ -823,16 +828,16 @@ impl App {
                             .width(Length::Fill)
                             .into()
                     },
-                    text({
-                        let mut s = format!("p_stack: {}; ", exec.p_stack);
-                        if exec.q_flag {
-                            s = format!("{s}waiting for quote; ");
-                        }
-                        if exec.b_err {
-                            s = format!("{s}corrupted output");
-                        }
-                        s
-                    }),
+                    // text({
+                    //     let mut s = format!("p_stack: {}; ", exec.p_stack);
+                    //     if exec.q_flag {
+                    //         s = format!("{s}waiting for quote; ");
+                    //     }
+                    //     if exec.b_err {
+                    //         s = format!("{s}corrupted output");
+                    //     }
+                    //     s
+                    // }),
                 ],
             );
         }

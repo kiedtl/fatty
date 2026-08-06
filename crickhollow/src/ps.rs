@@ -1,9 +1,8 @@
 use std::fs;
 use std::fmt;
 
-use crate::bolger::Bolger;
-
 use anyhow::{bail, Result, Context};
+use bwine::{self, Value};
 use clap::Parser;
 use libc::pid_t;
 
@@ -16,15 +15,39 @@ pub fn main() {
     let args = Cli::parse();
     _ = args;
 
-    let mut b = Bolger::new();
-    match readprocs() {
-        Ok(procs) => {
-            for proc in procs {
-                let (maj, min) = proc.majmin();
-                println!("{}\t{}\t{}\t{}\t{}\t{}\t{}:{}", proc.pid, proc.state, proc.ppid, proc.utime, proc.stime, maj, min, proc.tcomm);
-            }
+    let procs = match readprocs() {
+        Ok(procs) => procs,
+        Err(e) => {
+            eprintln!("ps: {e:?}");
+            std::process::exit(1);
         }
-        Err(e) => eprintln!("{e:?}"),
+    };
+
+    if std::env::var_os("FATTY").is_some() {
+        let mut writer = bwine::stdout_writer().unwrap();
+        let mut stt = bwine::stream_table(
+            &mut writer.0,
+            ["pid", "state", "ppid", "utime", "stime", "maj", "min", "tcomm"],
+        ).unwrap();
+        for proc in procs {
+            let (maj, min) = proc.majmin();
+            stt.row([
+                Value::from(proc.pid as usize),
+                Value::from(proc.state.to_str()),
+                Value::from(proc.ppid as usize),
+                Value::from(proc.utime),
+                Value::from(proc.stime),
+                Value::from(maj),
+                Value::from(min),
+                Value::from(proc.tcomm),
+            ]).unwrap();
+        }
+        stt.end();
+    } else {
+        for proc in procs {
+            let (maj, min) = proc.majmin();
+            println!("{}\t{}\t{}\t{}\t{}\t{}\t{}:{}", proc.pid, proc.state, proc.ppid, proc.utime, proc.stime, maj, min, proc.tcomm);
+        }
     }
 }
 
@@ -36,6 +59,20 @@ enum State {
     Stopped,
     TracingStopped,
     IdleKernel,
+}
+
+impl State {
+    fn to_str(&self) -> &'static str {
+        match self {
+            State::Running => "Running",
+            State::Sleeping => "Sleeping",
+            State::SleepingD => "SleepingD",
+            State::Zombie => "Zombie",
+            State::Stopped => "Stopped",
+            State::TracingStopped => "TracingStopped",
+            State::IdleKernel => "IdleKernel",
+        }
+    }
 }
 
 impl fmt::Display for State {

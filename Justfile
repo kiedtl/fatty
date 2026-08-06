@@ -1,6 +1,18 @@
 install:
+	mkdir -p ~/.local/bin/fatty_bin/tools/
+	mkdir -p ~/.local/bin/fatty_bin/crickhollow/
 	cargo build --release -p fatty
+	cargo build --release -p crickhollow
 	cp target/release/fatty ~/.local/bin/
+	cp target/release/select ~/.local/bin/fatty_bin/tools/
+	cp target/release/crickhollow ~/.local/bin/fatty_bin/crickhollow/
+	ln -fs ~/.local/bin/fatty_bin/crickhollow/crickhollow ~/.local/bin/fatty_bin/crickhollow/ps
+	ln -fs ~/.local/bin/fatty_bin/crickhollow/crickhollow ~/.local/bin/fatty_bin/crickhollow/du
+	ln -fs ~/.local/bin/fatty_bin/crickhollow/crickhollow ~/.local/bin/fatty_bin/crickhollow/df
+	ln -fs ~/.local/bin/fatty_bin/crickhollow/crickhollow ~/.local/bin/fatty_bin/crickhollow/cp
+	ln -fs ~/.local/bin/fatty_bin/crickhollow/crickhollow ~/.local/bin/fatty_bin/crickhollow/max
+	chmod +x ~/.local/bin/fatty_bin/crickhollow/*
+	chmod +x ~/.local/bin/fatty_bin/tools/*
 
 test_cp:
 	@cargo build --package crickhollow 2>/dev/null

@@ -1,3 +1,5 @@
+// TODO: move this to fatty/bin, along with select
+
 use std::time::{Instant, Duration};
 use std::io::Read;
 
@@ -192,7 +194,7 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
     }
 
     if false && std::env::var_os("FATTY").is_some() {
-        let mut bw = bwine::stdout_writer();
+        let mut bw = bwine::stdout_writer().unwrap();
         Value::Table { header: h, rows, }.write(&mut bw.0).unwrap();
     } else if true {
         bolger_print(&mut b, &h, &rows);
@@ -201,7 +203,7 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
         b.attr_str("id", "sp");
         b.end("row");
     } else {
-        use tabled::{builder::Builder, settings::{object::Rows, Modify, themes::ColumnNames, Color, Style}};
+        use tabled::{builder::Builder, settings::{object::Rows, Color, Style}};
         let mut builder = Builder::from_iter(
             rows.into_iter().map(|r| r.into_iter().map(|v| v.to_string()))
         );
