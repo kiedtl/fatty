@@ -27,10 +27,8 @@ where
     Renderer: advanced::Renderer,
 {
     state: &'a ControlState,
-    width: Length,
-    height: Length,
-    max_width: f32,
-    max_height: f32,
+    width: Option<Length>,
+    height: Option<Length>,
     align_x: alignment::Horizontal,
     align_y: alignment::Vertical,
     clip: bool,
@@ -48,14 +46,11 @@ impl<'a, Message, Renderer: advanced::Renderer> Controller<'a, Message, Renderer
         T: Into<Element<'a, Message, crate::styles::Theme, Renderer>>,
     {
         let content = content.into();
-        let size = content.as_widget().size_hint();
 
         Controller {
             state,
-            width: size.width.fluid(),
-            height: size.height.fluid(),
-            max_width: f32::INFINITY,
-            max_height: f32::INFINITY,
+            width: None,
+            height: None,
             align_x: alignment::Horizontal::Left,
             align_y: alignment::Vertical::Top,
             clip: false,
@@ -65,22 +60,12 @@ impl<'a, Message, Renderer: advanced::Renderer> Controller<'a, Message, Renderer
     }
 
     pub fn width(mut self, width: impl Into<Length>) -> Self {
-        self.width = width.into();
+        self.width = Some(width.into());
         self
     }
 
     pub fn height(mut self, height: impl Into<Length>) -> Self {
-        self.height = height.into();
-        self
-    }
-
-    pub fn max_width(mut self, max_width: impl Into<Pixels>) -> Self {
-        self.max_width = max_width.into().0;
-        self
-    }
-
-    pub fn max_height(mut self, max_height: impl Into<Pixels>) -> Self {
-        self.max_height = max_height.into().0;
+        self.height = Some(height.into());
         self
     }
 
@@ -127,18 +112,14 @@ where
         self.content.as_widget().state()
     }
 
-    fn children(&self) -> Vec<Tree> {
-        self.content.as_widget().children()
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        self.content.as_widget().diff(tree);
+    fn diff(&mut self, tree: &mut Tree) {
+        self.content.as_widget_mut().diff(tree);
     }
 
     fn size(&self) -> Size<Length> {
         Size {
-            width: self.width,
-            height: self.height,
+            width: self.width.unwrap_or(Length::Shrink),
+            height: self.height.unwrap_or(Length::Shrink),
         }
     }
 
@@ -148,10 +129,11 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
+        let size = self.size();
         layout::positioned(
-            &limits.max_width(self.max_width).max_height(self.max_height),
-            self.width,
-            self.height,
+            limits,
+            size.width,
+            size.height,
             Padding::ZERO,
             |limits| {
                 self.content.as_widget_mut().layout(tree, renderer, &limits.loose())

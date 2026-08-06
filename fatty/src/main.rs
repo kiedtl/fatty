@@ -688,19 +688,15 @@ impl App {
         fn listing_grid<'a>(app: &'a App) -> Elem<'a> {
             responsive(move |sz| {
                 let widths = app.listing.iter()
-                    .map(|d| utils::measure_text(
+                    .map(|d| {
+                        utils::measure_text(
                             &d.name, std::f32::INFINITY,
-                            14., 1., iced::font::Font::default()
-                    ).0)
+                            16., 1., iced::font::Font::default()
+                        ).0
+                    })
                     .collect::<Vec<_>>();
-                let max = widths.iter().copied().fold(0., f32::max) * 1.2;
-                let cell_width = if max > sz.width * 0.2 {
-                    let mut widths = widths;
-                    widths.sort_by(|a, b| a.total_cmp(b));
-                    widths[widths.len() / 3 * 2]
-                } else {
-                    max
-                };
+                let max = widths.iter().copied().fold(0., f32::max);
+                let cell_width = max.min(sz.width * 0.12).max(50.) * 1.1;
 
                 let all_same_uname = app.listing.len() > 0
                     && app.listing.iter().skip(1).all(|it| app.listing[0].uname == it.uname);
@@ -732,10 +728,9 @@ impl App {
                         .padding(3)
                         .into()
                 }))
-                    .spacing(2)
+                    .spacing(4)
                     .height(Length::Shrink)
                     .fluid(cell_width)
-                    .into()
             })
                 .width(Length::Fill)
                 .height(Length::Shrink)
@@ -895,9 +890,7 @@ impl App {
                     column![
                         responsive(move |size| {
                             self.vwidth.set(Some(size.width));
-                            space()
-                                .height(1.)
-                                .into()
+                            space().height(1.)
                         })
                             .height(Length::Shrink)
                             .width(Length::Fill),
@@ -944,6 +937,8 @@ impl App {
                 .height(Length::Fill)
                 .class(CS::Outer)
         )
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 }

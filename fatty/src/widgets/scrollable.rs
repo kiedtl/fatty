@@ -46,8 +46,8 @@ pub struct Scrollable<
     Renderer: iced::advanced::Renderer,
 {
     id: Option<Id>,
-    width: Length,
-    height: Length,
+    width: Option<Length>,
+    height: Option<Length>,
     direction: Direction,
     content: Element<'a, Message, Theme, Renderer>,
     on_scroll: Option<Box<dyn Fn(Viewport) -> Message + 'a>>,
@@ -76,8 +76,8 @@ where
     ) -> Self {
         Scrollable {
             id: None,
-            width: Length::Shrink,
-            height: Length::Shrink,
+            width: None,
+            height: None,
             hide_bars: false,
             direction: direction.into(),
             content: content.into(),
@@ -86,37 +86,12 @@ where
             auto_scroll_y: None,
             last_status: None,
         }
-        .validate()
-    }
-
-    fn validate(mut self) -> Self {
-        let size_hint = self.content.as_widget().size_hint();
-
-        debug_assert!(
-            self.direction.vertical().is_none() || !size_hint.height.is_fill(),
-            "scrollable content must not fill its vertical scrolling axis"
-        );
-
-        debug_assert!(
-            self.direction.horizontal().is_none() || !size_hint.width.is_fill(),
-            "scrollable content must not fill its horizontal scrolling axis"
-        );
-
-        if self.direction.horizontal().is_none() {
-            self.width = self.width.enclose(size_hint.width);
-        }
-
-        if self.direction.vertical().is_none() {
-            self.height = self.height.enclose(size_hint.height);
-        }
-
-        self
     }
 
     /// Creates a new [`Scrollable`] with the given [`Direction`].
     pub fn direction(mut self, direction: impl Into<Direction>) -> Self {
         self.direction = direction.into();
-        self.validate()
+        self
     }
 
     pub fn auto_scroll_y(mut self, amount: f32) -> Self {
@@ -132,13 +107,13 @@ where
 
     /// Sets the width of the [`Scrollable`].
     pub fn width(mut self, width: impl Into<Length>) -> Self {
-        self.width = width.into();
+        self.width = Some(width.into());
         self
     }
 
     /// Sets the height of the [`Scrollable`].
     pub fn height(mut self, height: impl Into<Length>) -> Self {
-        self.height = height.into();
+        self.height = Some(height.into());
         self
     }
 
@@ -384,18 +359,24 @@ where
         tree::State::new(State::new(self.auto_scroll_y))
     }
 
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_mut(&mut self.content));
 
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(std::slice::from_ref(&self.content));
+        let size = self.content.as_widget().size();
+
+        if self.width.is_none() || self.direction.horizontal().is_none() {
+            self.width = Some(size.width);
+        }
+
+        if self.height.is_none() || self.direction.vertical().is_none() {
+            self.height = Some(size.height);
+        }
     }
 
     fn size(&self) -> Size<Length> {
         Size {
-            width: self.width,
-            height: self.height,
+            width: self.width.unwrap_or(Length::Shrink),
+            height: self.height.unwrap_or(Length::Shrink),
         }
     }
 
@@ -405,6 +386,8 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
+        let size = self.size();
+
         let (right_padding, bottom_padding) = match self.direction {
             Direction::Vertical(Scrollbar {
                 width,
@@ -423,8 +406,8 @@ where
 
         layout::padded(
             limits,
-            self.width,
-            self.height,
+            size.width,
+            size.height,
             Padding {
                 right: right_padding,
                 bottom: bottom_padding,

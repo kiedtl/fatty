@@ -192,7 +192,7 @@ impl Element {
                                     ..Default::default()
                                 })),
                             space().height(18.).width((1. - p) * size.width),
-                        ].into()
+                        ]
                     }))
                         .padding(Padding {
                             left: 0.,

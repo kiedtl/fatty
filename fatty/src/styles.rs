@@ -411,7 +411,6 @@ pub fn input(t: &Theme, status: text_input::Status) -> text_input::Style {
             width: 2.,
             color: t.bg(8),
         },
-        icon: t.ac(4),
         placeholder: t.bg(8),
         value: t.fg,
         selection: t.ac(14),

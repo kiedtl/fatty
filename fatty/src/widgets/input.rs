@@ -254,7 +254,7 @@ where
             align_y: alignment::Vertical::Center,
             shaping: text::Shaping::Advanced,
             wrapping: text::Wrapping::default(),
-            hint_factor: renderer.scale_factor(),
+            hint_factor: renderer.hint_factor(),
             ellipsis: Default::default(),
         };
 
@@ -278,7 +278,7 @@ where
                 align_y: alignment::Vertical::Center,
                 shaping: text::Shaping::Advanced,
                 wrapping: text::Wrapping::default(),
-                hint_factor: renderer.scale_factor(),
+                hint_factor: renderer.hint_factor(),
                 ellipsis: Default::default(),
             };
 
@@ -426,7 +426,7 @@ where
 
                     let width = if self.mode == ControlMode::Insert {
                         if renderer::CRISP {
-                            (1.0 / renderer.scale_factor().unwrap_or(1.0)).max(1.0)
+                            (1.0 / renderer.hint_factor().unwrap_or(1.0)).max(1.0)
                         } else {
                             1.0
                         }
@@ -1147,7 +1147,7 @@ where
         tree::State::new(State::<Renderer::Paragraph>::new(self.mode))
     }
 
-    fn diff(&self, tree: &mut Tree) {
+    fn diff(&mut self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
         // Stop pasting if input becomes disabled
@@ -1181,7 +1181,7 @@ where
     ) {
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
-        operation.text_input(self.id.as_ref(), layout.bounds(), state);
+        //operation.text_input(self.id.as_ref(), layout.bounds(), state);
         operation.focusable(self.id.as_ref(), layout.bounds(), state);
     }
 
@@ -1337,6 +1337,7 @@ enum Drag {
 #[derive(Debug, Clone)]
 enum Paste {
     Reading,
+    #[allow(dead_code)]
     Pasting(Value),
 }
 
@@ -1395,30 +1396,30 @@ impl<P: text::Paragraph> State<P> {
         self.is_focused = None;
     }
 
-    /// Moves the [`Cursor`] of the [`TextInput`] to the front of the input text.
-    pub fn move_cursor_to_front(&mut self) {
-        self.cursor.move_to(0);
-    }
+    // /// Moves the [`Cursor`] of the [`TextInput`] to the front of the input text.
+    // pub fn move_cursor_to_front(&mut self) {
+    //     self.cursor.move_to(0);
+    // }
 
     /// Moves the [`Cursor`] of the [`TextInput`] to the end of the input text.
     pub fn move_cursor_to_end(&mut self) {
         self.cursor.move_to(usize::MAX);
     }
 
-    /// Moves the [`Cursor`] of the [`TextInput`] to an arbitrary location.
-    pub fn move_cursor_to(&mut self, position: usize) {
-        self.cursor.move_to(position);
-    }
+    // /// Moves the [`Cursor`] of the [`TextInput`] to an arbitrary location.
+    // pub fn move_cursor_to(&mut self, position: usize) {
+    //     self.cursor.move_to(position);
+    // }
 
-    /// Selects all the content of the [`TextInput`].
-    pub fn select_all(&mut self) {
-        self.cursor.select_range(0, usize::MAX);
-    }
+    // /// Selects all the content of the [`TextInput`].
+    // pub fn select_all(&mut self) {
+    //     self.cursor.select_range(0, usize::MAX);
+    // }
 
-    /// Selects the given range of the content of the [`TextInput`].
-    pub fn select_range(&mut self, start: usize, end: usize) {
-        self.cursor.select_range(start, end);
-    }
+    // /// Selects the given range of the content of the [`TextInput`].
+    // pub fn select_range(&mut self, start: usize, end: usize) {
+    //     self.cursor.select_range(start, end);
+    // }
 }
 
 impl<P: text::Paragraph> operation::Focusable for State<P> {
@@ -1435,35 +1436,35 @@ impl<P: text::Paragraph> operation::Focusable for State<P> {
     }
 }
 
-impl<P: text::Paragraph> operation::TextInput for State<P> {
-    fn text(&self) -> &str {
-        if self.value.content().is_empty() {
-            self.placeholder.content()
-        } else {
-            self.value.content()
-        }
-    }
+// impl<P: text::Paragraph> operation::TextInput for State<P> {
+//     fn text(&self) -> &str {
+//         if self.value.content().is_empty() {
+//             self.placeholder.content()
+//         } else {
+//             self.value.content()
+//         }
+//     }
 
-    fn move_cursor_to_front(&mut self) {
-        State::move_cursor_to_front(self);
-    }
+//     fn move_cursor_to_front(&mut self) {
+//         State::move_cursor_to_front(self);
+//     }
 
-    fn move_cursor_to_end(&mut self) {
-        State::move_cursor_to_end(self);
-    }
+//     fn move_cursor_to_end(&mut self) {
+//         State::move_cursor_to_end(self);
+//     }
 
-    fn move_cursor_to(&mut self, position: usize) {
-        State::move_cursor_to(self, position);
-    }
+//     fn move_cursor_to(&mut self, position: usize) {
+//         State::move_cursor_to(self, position);
+//     }
 
-    fn select_all(&mut self) {
-        State::select_all(self);
-    }
+//     fn select_all(&mut self) {
+//         State::select_all(self);
+//     }
 
-    fn select_range(&mut self, start: usize, end: usize) {
-        State::select_range(self, start, end);
-    }
-}
+//     fn select_range(&mut self, start: usize, end: usize) {
+//         State::select_range(self, start, end);
+//     }
+// }
 
 fn offset<P: text::Paragraph>(text_bounds: Rectangle, value: &Value, state: &State<P>) -> f32 {
     if state.is_focused() {
@@ -1550,7 +1551,7 @@ fn replace_paragraph<Renderer>(
         align_y: alignment::Vertical::Center,
         shaping: text::Shaping::Advanced,
         wrapping: text::Wrapping::default(),
-        hint_factor: renderer.scale_factor(),
+        hint_factor: renderer.hint_factor(),
         ellipsis: Default::default(),
     });
 }
