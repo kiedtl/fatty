@@ -43,7 +43,7 @@ use iced::widget::{
     Column,
     Row,
 };
-use iced::advanced::text::Ellipsis;
+use iced::advanced::text::{Wrapping, Ellipsis};
 
 mod bolger;
 mod colors;
@@ -689,7 +689,7 @@ impl App {
                     ).0)
                     .collect::<Vec<_>>();
                 let max = widths.iter().copied().fold(0., f32::max) * 1.2;
-                let cell_width = if max > sz.width * 0.12 {
+                let cell_width = if max > sz.width * 0.2 {
                     let mut widths = widths;
                     widths.sort_by(|a, b| a.total_cmp(b));
                     widths[widths.len() / 3 * 2]
@@ -701,28 +701,30 @@ impl App {
                     && app.listing.iter().skip(1).all(|it| app.listing[0].uname == it.uname);
 
                 grid(app.listing.iter().map(|d: &MyDirEntry| {
-                    container(mycolumn![
-                        container(
-                            text(d.name.clone())
-                                .ellipsis(Ellipsis::End)
-                        )
-                            .width(Length::Shrink)
-                            .class(listing_item_class(app, d)),
-                        mono(
-                            if d.kind == FileType::Directory {
-                                "".to_string()
-                            } else {
-                                utils::fmt_size(d.size)
-                            }
-                        ),
-                        if !all_same_uname =>
-                            text(d.uname.as_ref().map(|s| s.as_str()).unwrap_or("?"))
-                                .ellipsis(Ellipsis::End),
-                        utils::Mode(d.mode).to_iced()
-                    ])
-                        .clip(true)
+                    container(
+                        container(mycolumn![
+                            container(
+                                text(d.name.clone())
+                                    .wrapping(Wrapping::WordOrGlyph)
+                                    .ellipsis(Ellipsis::End)
+                            )
+                                .width(Length::Shrink)
+                                .class(listing_item_class(app, d)),
+                            mono(
+                                if d.kind == FileType::Directory {
+                                    "".to_string()
+                                } else {
+                                    utils::fmt_size(d.size)
+                                }
+                            ),
+                            if !all_same_uname =>
+                                text(d.uname.as_ref().map(|s| s.as_str()).unwrap_or("?"))
+                                    .ellipsis(Ellipsis::End),
+                            utils::Mode(d.mode).to_iced()
+                        ]).clip(true)
+                    )
                         .class(CS::GrayBox)
-                        .padding(2)
+                        .padding(3)
                         .into()
                 }))
                     .spacing(2)
