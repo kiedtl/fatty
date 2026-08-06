@@ -1,3 +1,7 @@
+install:
+	cargo build --release -p fatty
+	cp target/release/fatty ~/.local/bin/
+
 test_cp:
 	@cargo build --package crickhollow 2>/dev/null
 	@rm -rf target/_foo target/_bar
