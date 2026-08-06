@@ -14,7 +14,7 @@ use crate::{out, outln};
 use itertools::Itertools;
 use rustix::process::Pid;
 use rustix::fd::{FromRawFd, AsFd, AsRawFd, OwnedFd, BorrowedFd};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 // pub enum RunCondition {
 //     PreviousFailed,
@@ -196,13 +196,25 @@ pub enum VMStatus {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum VMMessage {
+    ChangedDir,
+}
+
 pub struct VM {
-    pub env: Arc<HashMap<OsString, OsString>>,
     pub program: Arc<Vec<Block>>,
     pub pc: (usize, Option<usize>),
+
+    pub env: Arc<HashMap<OsString, OsString>>,
     pub waiting_on: Option<Pid>,
     pub child_exit_stack: Vec<ExitReason>,
+
+    // For communicating between top-level shell and subshells. Rx is inside parent_vm.jobs.
     pub status: Option<watch::Sender<VMStatus>>,
+
+    // For communicating between top-level shell and Fatty.
+    pub msg_tx: Option<mpsc::Sender<VMMessage>>,
+
     pub jobs: Vec<Job>,
     pub done: bool,
 }
@@ -230,6 +242,10 @@ impl VM {
 
                 if let Err(e) = std::env::set_current_dir(&argv[0]) {
                     outln!("cd: {e:?}");
+                }
+
+                if let Some(sender) = &self.msg_tx {
+                    sender.blocking_send(VMMessage::ChangedDir).unwrap();
                 }
             }
             Instr::Run { command } => {
@@ -268,7 +284,7 @@ impl VM {
                 let mut last_pid = None;
 
                 for (i, item) in items.iter().enumerate() {
-                    let RunPipelineItem::Command(command) = item else { panic!("CLAUDE") };
+                    let RunPipelineItem::Command(command) = item else { unreachable!() };
                     let mut keep = Vec::<OwnedFd>::new();
                     reader = next_reader;
                     next_reader = None;
@@ -326,7 +342,7 @@ impl VM {
                     std::mem::drop(keep);
                 }
 
-                let RunPipelineItem::Command(last) = items.last().unwrap() else { panic!("CLAUDE") };
+                let RunPipelineItem::Command(last) = items.last().unwrap() else { unreachable!() };
                 self.waiting_on = last_pid;
                 if let Some(sender) = &self.status {
                     sender.send(VMStatus::Waiting {
@@ -346,6 +362,7 @@ impl VM {
                     child_exit_stack: Vec::new(),
                     jobs: Vec::new(),
                     status: Some(tx),
+                    msg_tx: None,
                     done: false,
                 };
 

@@ -16,14 +16,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, Duration};
 
 use futures::stream::BoxStream;
-use futures::channel::mpsc::Sender;
+use futures::channel::mpsc as futures_mpsc; // TODO: convert all to tokio's mpsc
 use futures::{StreamExt, SinkExt};
 use inotify;
 use itertools::Itertools;
 use rustix::fd::{AsFd, OwnedFd, RawFd, AsRawFd};
 use rustix::process::{kill_process, Pid, Signal};
 use rustix::fs::FileType;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch, Mutex as TokioMutex};
 use vte;
 
 use iced::futures::stream;
@@ -112,6 +112,7 @@ pub struct Execution {
 
     cmdline: String,
     vm: vm::VM,
+    rx: Option<Arc<TokioMutex<mpsc::Receiver<vm::VMMessage>>>>,
     exit_reason: Option<ExitReason>,
     is_drained: bool,
     fd3_is_drained: bool,
@@ -137,7 +138,7 @@ pub struct Execution {
 }
 
 impl Execution {
-    pub fn new(cmdline: String, vm: vm::VM, width: usize) -> Execution {
+    pub fn new(cmdline: String, vm: vm::VM, rx: mpsc::Receiver<vm::VMMessage>, width: usize) -> Execution {
         //let (fd3_master, fd3_slave) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::NONBLOCK).unwrap();
         // Unix socket for bidi communication.. bad idea?
         let (fd3_master, fd3_slave) = rustix::net::socketpair(
@@ -150,6 +151,7 @@ impl Execution {
             fd3_master: Arc::new(fd3_master),
             fd3_slave,
             cmdline, vm,
+            rx: Some(Arc::new(TokioMutex::new(rx))),
             term: term::Term::new(width),
             ansi: vte::ansi::Processor::new(),
             output: "".to_owned(),
@@ -248,10 +250,13 @@ pub enum Message {
     ContinueProgram,
     ChildExited(Pid, ExitReason),
     JobResolved(usize, usize),
+    VMMessage(usize, vm::VMMessage),
+    VMMessageClosed(usize),
     Pty(usize, bool, Box<[u8]>),
     PtyInput(usize, Cow<'static, [u8]>),
     PtyDrained(usize, bool),
     Signal(Signal),
+    DirectoryChanged,
     Inotify(OsString),
     Controller(ControlMessage),
 }
@@ -390,6 +395,7 @@ impl App {
                         ).unwrap();
 
                         let cmdline = std::mem::take(&mut self.input);
+                        let (tx, rx) = mpsc::channel(999);
                         self.execs.push(Execution::new(
                             cmdline,
                             vm::VM {
@@ -399,9 +405,11 @@ impl App {
                                 waiting_on: None,
                                 child_exit_stack: Vec::new(),
                                 jobs: Vec::new(),
+                                msg_tx: Some(tx),
                                 status: None,
                                 done: false,
                             },
+                            rx,
                             width as usize,
                         ));
 
@@ -460,6 +468,16 @@ impl App {
             },
             Message::JobResolved(_exec_ind, _job_ind) => {
                 // todo
+            },
+            Message::VMMessageClosed(exec_ind) => {
+                if let Some(exec) = self.execs.get_mut(exec_ind) {
+                    exec.rx = None;
+                }
+            }
+            Message::VMMessage(_exec_ind, message) => {
+                match message {
+                    vm::VMMessage::ChangedDir => return self.update(Message::DirectoryChanged),
+                }
             },
             Message::Pty(exec_ind, is_fd3, buf) => {
                 let Some(exec) = self.execs.get_mut(exec_ind) else { return Task::none() };
@@ -549,6 +567,10 @@ impl App {
                     kill_process(pid, sig).unwrap();
                 }
             },
+            Message::DirectoryChanged => {
+                self.listing_last_changed = None;
+                self.listing = listing();
+            },
             Message::Inotify(item) => {
                 self.listing_last_changed = Some((item, Instant::now()));
                 self.listing = listing();
@@ -603,6 +625,7 @@ impl App {
         };
 
         let jobs = watch_jobs(self);
+        let vmwatch = watch_vms(self);
 
         let fswatch = if let Ok(path) = std::env::current_dir() {
             fswatch(path)
@@ -622,7 +645,7 @@ impl App {
             Subscription::none()
         };
 
-        Subscription::batch([polls, keys, wait, jobs, fswatch, animation])
+        Subscription::batch([polls, keys, wait, jobs, vmwatch, fswatch, animation])
     }
 
     fn view(&self) -> Elem<'_> {
@@ -1064,7 +1087,7 @@ fn watch_jobs(app: &App) -> Subscription<Message> {
         receivers,
         |receivers| {
             let receivers = receivers.clone();
-            iced::stream::channel(16, move |mut output: Sender<Message>| async move {
+            iced::stream::channel(16, move |mut output: futures_mpsc::Sender<Message>| async move {
                 loop {
                     let futures: Vec<_> = receivers
                         .iter()
@@ -1090,6 +1113,56 @@ fn watch_jobs(app: &App) -> Subscription<Message> {
                         .send(Message::JobResolved(exec_index, job_index))
                         .await
                         .ok();
+                }
+            })
+        }
+    )
+}
+
+fn watch_vms(app: &App) -> Subscription<Message> {
+    #[derive(Clone)]
+    struct Watching {
+        exec_ind: usize,
+        rx: Arc<TokioMutex<mpsc::Receiver<vm::VMMessage>>>,
+    }
+
+    impl Hash for Watching {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.exec_ind.hash(state);
+        }
+    }
+
+    let receivers: Vec<Watching> = app.execs.iter()
+        .enumerate()
+        .filter(|(_, exec)| exec.rx.is_some())
+        .map(|(exec_ind, exec)| Watching { exec_ind, rx: exec.rx.as_ref().unwrap().clone() })
+        .collect();
+
+    if receivers.is_empty() {
+        return Subscription::none();
+    }
+
+    Subscription::run_with(
+        receivers,
+        |receivers| {
+            let receivers = receivers.clone();
+            iced::stream::channel(32, move |mut output: futures_mpsc::Sender<Message>| async move {
+                loop {
+                    let futures: Vec<_> = receivers
+                        .iter()
+                        .map(|Watching { exec_ind, rx }| {
+                            let mut rx = rx.clone();
+                            let exec_idx = *exec_ind;
+                            Box::pin(async move {
+                                match rx.lock().await.recv().await {
+                                    Some(val) => Message::VMMessage(exec_idx, val),
+                                    None => Message::VMMessageClosed(exec_idx),
+                                }
+                            })
+                        })
+                        .collect();
+                    let (val, _, _) = futures::future::select_all(futures).await;
+                    output.send(val).await.unwrap();
                 }
             })
         }
