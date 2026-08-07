@@ -7,5 +7,6 @@ edition = "2024"
 name = "bwine"
 
 [dependencies]
+chrono = "0.4.45"
 minicbor = { version = "2.2.2", features = ["std", "alloc"] }
 rustix = { version = "1.1.4", features = ["fs"] }

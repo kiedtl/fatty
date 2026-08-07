@@ -26,3 +26,4 @@ tokio = { version = "1.51.0", features = ["sync"] }
 unicode-segmentation = "1.13.2"
 vte = { version = "0.15.0", features = ["bitflags", "ansi"] }
 anyhow = "1.0.104"
+chrono = "0.4.45"

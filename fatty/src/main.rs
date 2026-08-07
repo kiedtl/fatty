@@ -28,7 +28,7 @@ use vte;
 
 use iced::futures::stream;
 use iced::window;
-use iced::{Event, Element, Task, Subscription, Padding, Length};
+use iced::{Size, Event, Element, Task, Subscription, Padding, Length};
 use iced::keyboard::{self, key, Modifiers};
 use iced::widget::{
     column,
@@ -275,7 +275,7 @@ struct App {
     listing: Vec<MyDirEntry>,
     listing_last_changed: Option<(OsString, Instant)>,
 
-    vwidth: cell::Cell<Option<f32>>,
+    vsize: cell::Cell<Option<Size>>,
 }
 
 impl Drop for App {
@@ -331,7 +331,7 @@ impl App {
                 slave: pty.user,
                 theme: styles::Theme::gruvbox(),
                 //shell: Arc::new(TokioMutex::new(shell)),
-                vwidth: cell::Cell::new(None),
+                vsize: cell::Cell::new(None),
                 env,
                 path,
             },
@@ -380,8 +380,8 @@ impl App {
                         // Sometimes there's an extra column that causes ugly wrapping
                         let font_width = font_width * 1.01;
 
-                        let width = self.vwidth.get()
-                            .map(|width| (width / font_width).floor() as u16)
+                        let width = self.vsize.get()
+                            .map(|s| (s.width / font_width).floor() as u16)
                             .unwrap_or(70);
 
                         rustix::termios::tcsetwinsize(
@@ -649,7 +649,7 @@ impl App {
     }
 
     fn view(&self) -> Elem<'_> {
-        let exit_reason = |reason| {
+        let exit_reason: fn(_) -> _ = |reason| {
             match reason {
                 None => text("Running"),
                 Some(ExitReason::Normal(code)) => text(code.to_string()),
@@ -790,75 +790,79 @@ impl App {
             }
         }
 
-        let mut execs = Column::new()
-            .spacing(1);
+        let execs_view = move || {
+            let mut col = Column::new()
+                .spacing(1);
 
-        for (i, exec) in self.execs.iter().enumerate() {
-            execs = execs.push(
-                column![
-                    container(
-                        row![
-                            container(
-                                text(&exec.cmdline)
-                            )
-                                .width(Length::Fill),
-                            exit_reason(exec.exit_reason),
-                        ],
-                    )
-                        .class(CS::Box)
-                        .padding(3),
-                    if !exec.document.elements.is_empty() {
-                        let e: Elem<'_> = scrollable({
-                            let mut uis = Column::new()
-                                .spacing(0);
-                            let mut spans = Vec::new();
-
-                            for uielem in &exec.document.elements {
-                                if uielem.is_block() {
-                                    uis = uis.push(
-                                        Rich::with_spans(std::mem::take(&mut spans))
-                                            .on_link_click(iced::never)
-                                    );
-                                    uis = uis.push(uielem.to_iced(Default::default(), &exec.document.ids));
-                                } else {
-                                    spans.push(uielem.to_iced_span(Default::default(), &exec.document.ids));
-                                }
-                            }
-
-                            let e: Elem<'_> = uis.into();
-                            e
-                        }).into();
-                        e
-                    } else if let Some(object) = &exec.bwine_object {
-                        scrollable(bwine_ui::to_iced(object)).into()
-                    } else {
+            for (i, exec) in self.execs.iter().enumerate() {
+                col = col.push(
+                    column![
                         container(
-                            widgets::tty::Tty::new(
-                                &exec.term,
-                                &self.theme,
-                                FONT_SIZE,
-                                |term, theme, color| term.resolve(theme, color),
-                                move |c| Message::PtyInput(i, c),
-                                i == self.execs.len() - 1 && !exec.vm.done
-                            )
+                            row![
+                                container(
+                                    text(&exec.cmdline)
+                                )
+                                    .width(Length::Fill),
+                                exit_reason(exec.exit_reason),
+                            ],
                         )
-                            .padding(1)
-                            .width(Length::Fill)
-                            .into()
-                    },
-                    // text({
-                    //     let mut s = format!("p_stack: {}; ", exec.p_stack);
-                    //     if exec.q_flag {
-                    //         s = format!("{s}waiting for quote; ");
-                    //     }
-                    //     if exec.b_err {
-                    //         s = format!("{s}corrupted output");
-                    //     }
-                    //     s
-                    // }),
-                ],
-            );
-        }
+                            .class(CS::Box)
+                            .padding(3),
+                        if !exec.document.elements.is_empty() {
+                            let e: Elem<'_> = scrollable({
+                                let mut uis = Column::new()
+                                    .spacing(0);
+                                let mut spans = Vec::new();
+
+                                for uielem in &exec.document.elements {
+                                    if uielem.is_block() {
+                                        uis = uis.push(
+                                            Rich::with_spans(std::mem::take(&mut spans))
+                                                .on_link_click(iced::never)
+                                        );
+                                        uis = uis.push(uielem.to_iced(Default::default(), &exec.document.ids));
+                                    } else {
+                                        spans.push(uielem.to_iced_span(Default::default(), &exec.document.ids));
+                                    }
+                                }
+
+                                let e: Elem<'_> = uis.into();
+                                e
+                            }).into();
+                            e
+                        } else if let Some(object) = &exec.bwine_object {
+                            scrollable(bwine_ui::to_iced(object, self.vsize.get())).into()
+                        } else {
+                            container(
+                                widgets::tty::Tty::new(
+                                    &exec.term,
+                                    &self.theme,
+                                    FONT_SIZE,
+                                    |term, theme, color| term.resolve(theme, color),
+                                    move |c| Message::PtyInput(i, c),
+                                    i == self.execs.len() - 1 && !exec.vm.done
+                                )
+                            )
+                                .padding(1)
+                                .width(Length::Fill)
+                                .into()
+                        },
+                        // text({
+                        //     let mut s = format!("p_stack: {}; ", exec.p_stack);
+                        //     if exec.q_flag {
+                        //         s = format!("{s}waiting for quote; ");
+                        //     }
+                        //     if exec.b_err {
+                        //         s = format!("{s}corrupted output");
+                        //     }
+                        //     s
+                        // }),
+                    ],
+                );
+            }
+
+            col
+        };
 
         let mut input = input(self.control.mode, "rm -rf /", &self.input);
 
@@ -912,25 +916,20 @@ impl App {
                         .height(Length::FillPortion(1)),
                     column![
                         responsive(move |size| {
-                            self.vwidth.set(Some(size.width));
-                            space().height(1.)
-                        })
-                            .height(Length::Shrink)
-                            .width(Length::Fill),
-                        column![
+                            self.vsize.set(Some(size));
                             scrollable(
-                                container(execs)
+                                container(execs_view())
                                     .padding(Padding {
                                         right: 15.,
                                         ..Default::default()
                                     })
                             )
                                 .anchor_bottom()
-                                .height(Length::Fill),
-                            input,
-                        ]
-                            .spacing(4.)
+                                .height(Length::Fill)
+                        }),
+                        input,
                     ]
+                        .spacing(4.)
                         .height(Length::FillPortion(3)),
                     container(
                         row![
@@ -941,10 +940,8 @@ impl App {
                             mono(
                                 if let Ok(cwd) = std::env::current_dir() {
                                     let mut p = cwd.display().to_string();
-                                    if let Some(home) = self.env.get(OsStr::new("HOME")) {
-                                        let home = home.to_string_lossy().to_string();
-                                        p = p.replace(&home, "~");
-                                    }
+                                    let home = self.get_env("HOME", "").to_string_lossy().to_string();
+                                    p = p.replace(&home, "~");
                                     p
                                 } else {
                                     "No known CWD!".to_string()

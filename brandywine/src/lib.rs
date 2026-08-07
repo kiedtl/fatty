@@ -16,6 +16,7 @@ use rustix::fd::{OwnedFd, BorrowedFd, FromRawFd, AsFd};
 
 pub const TABLE_TAG: u64 = 0x1FA772010;
 pub const PATH_TAG: u64 = 0x1FA772011;
+pub const TIMESTAMP_TAG: u64 = 0x01;
 
 #[derive(Debug, Clone)]
 pub enum Token<'a> {
@@ -38,6 +39,7 @@ pub enum Token<'a> {
     Simple(u8),
 
     Table,
+    Timestamp,
 
     End,
 }
@@ -146,6 +148,12 @@ impl<'a> Token<'a> {
                 }).collect();
                 (i, Value::Table { header: he, rows })
             },
+
+            Token::Timestamp => {
+                let (ns, Value::Int(ts)) = Self::collect(&ast[1..])?
+                    else { return None }; // TODO: error
+                (1 + ns, Value::Timestamp(ts as i64))
+            },
         })
     }
 
@@ -205,6 +213,7 @@ pub enum Expecting {
     Something,
     Map(usize, Option<u64>),
     Array(usize, Option<u64>),
+    TimestampValue,
     TableHeader,
     TableRows,
     TableRow(usize),
@@ -212,7 +221,7 @@ pub enum Expecting {
     Bytes(usize, Option<u64>),
 }
 
-pub struct StreamingReader{
+pub struct StreamingReader {
     pub stack: Vec<Expecting>,
 }
 
@@ -274,6 +283,7 @@ impl StreamingReader {
                     match d.tag()?.into() {
                         PATH_TAG => Some((Token::Path, Expecting::Bytes(astlen, read_len(d)?))),
                         TABLE_TAG => Some((Token::Table, Expecting::TableHeader)),
+                        TIMESTAMP_TAG => Some((Token::Timestamp, Expecting::TimestampValue)),
                         tag => Some((Token::Tag(tag), Expecting::Something)),
                     }
                 }
@@ -334,6 +344,16 @@ impl StreamingReader {
         }
 
         match expecting {
+            Expecting::TimestampValue => {
+                match decode_atomic(&mut d)? {
+                    None => return Err(decode::Error::end_of_input()),
+                    Some(bt @ Token::Int(_)) => {
+                        ast.push(bt);
+                        self.stack.pop();
+                    },
+                    v => panic!("expected scalar timestamp value (i64), found {v:?}"),
+                }
+            }
             Expecting::Array(_, Some(0)) => {
                 ast.push(Token::End);
                 self.stack.pop();
@@ -467,7 +487,7 @@ pub enum Value<'a> {
     // type 0/1
     Int(i128),
     // type 2: opaque bytes
-    Bytes(Vec<u8>),
+    Bytes(Cow<'a, [u8]>),
     // type 3: UTF-8
     Text(Cow<'static, str>),
     // type 4
@@ -489,6 +509,9 @@ pub enum Value<'a> {
         header: Vec<Value<'a>>,
         rows: Vec<Vec<Value<'a>>>,
     },
+    // Must be i64 when decoding as well
+    // TODO: add a Timestampf64 type as well maybe? or a timestampf128?
+    Timestamp(i64),
 }
 
 impl From<usize>  for Value<'static> { fn from(s: usize)  -> Value<'static> { Value::Int(s as _) } }
@@ -503,6 +526,18 @@ impl From<i16>    for Value<'static> { fn from(s: i16)    -> Value<'static> { Va
 impl From<i8>     for Value<'static> { fn from(s: i8)     -> Value<'static> { Value::Int(s as _) } }
 impl From<String> for Value<'static> { fn from(s: String) -> Value<'static> { Value::text(s) } }
 impl From<&'static str> for Value<'static> { fn from(s: &'static str) -> Value<'static> { Value::text(s) } }
+
+impl<'a> From<&'a std::ffi::OsStr> for Value<'a> {
+    fn from(s: &'a std::ffi::OsStr) -> Value<'a> {
+        Value::Bytes(s.as_bytes().into())
+    }
+}
+
+impl<T: chrono::TimeZone> From<chrono::DateTime<T>> for Value<'static> {
+    fn from(s: chrono::DateTime<T>) -> Value<'static> {
+        Value::Timestamp(s.timestamp_millis())
+    }
+}
 
 // impl<T, I> From<I> for Value
 // where
@@ -556,7 +591,7 @@ impl<'b> decode::Decode<'b, ()> for Value<'static> {
             | Type::I8 | Type::I16 | Type::I32 | Type::I64
             | Type::Int => Ok(Value::Int(d.int()?.into())),
 
-            Type::Bytes | Type::BytesIndef => Ok(Value::Bytes(read_chunks(d)?)),
+            Type::Bytes | Type::BytesIndef => Ok(Value::Bytes(read_chunks(d)?.into())),
             Type::String | Type::StringIndef => Ok(Value::Text(d.str_iter()?.collect::<Result<String, _>>()?.into())),
 
             Type::Array | Type::ArrayIndef => {
@@ -640,6 +675,10 @@ impl fmt::Display for Value<'_> {
             Value::Array(_) => write!(f, "<array>"),
             Value::Map(_) => write!(f, "<map>"),
             Value::Tag(_, _) => write!(f, "<tagged>"),
+            Value::Timestamp(t) => write!(f, "{}", {
+                use chrono::{Utc, DateTime};
+                DateTime::<Utc>::from_timestamp_millis(*t).unwrap().to_rfc3339()
+            }),
         }
     }
 }
@@ -663,7 +702,7 @@ impl<'a> Value<'a> {
                     .unwrap();
                 e.int(n)?;
             }
-            Value::Bytes(b) => _ = e.bytes(b)?,
+            Value::Bytes(b) => _ = e.bytes(&b)?,
             Value::Text(s)  => _ = e.str(&*s)?,
             Value::Array(items) => {
                 e.array(items.len() as u64)?;
@@ -704,6 +743,10 @@ impl<'a> Value<'a> {
                     }
                 }
             },
+            Value::Timestamp(t) => {
+                e.tag(Tag::new(TIMESTAMP_TAG))?;
+                e.i64(*t)?;
+            }
         }
         Ok(())
     }
