@@ -754,6 +754,9 @@ where
 
                 match self.mode {
                     ControlMode::Normal => {
+                        let mut capture = true;
+                        let mut modified = false;
+
                         match (state.keyboard_modifiers, modified_key.to_latin(*physical_key)) {
                             (Modifiers::NONE,  Some('h')) => state.cursor.move_left(&self.value),
                             (Modifiers::NONE,  Some('b')) => state.cursor.move_left_by_words(&self.value),
@@ -761,7 +764,22 @@ where
                             (Modifiers::NONE,  Some('w')) => state.cursor.move_right_by_words(&self.value),
                             (Modifiers::SHIFT, Some('$')) => state.cursor.move_to(usize::MAX),
                             (Modifiers::NONE,  Some('0')) => state.cursor.move_to(0),
-                            _ => (),
+                            (Modifiers::SHIFT, Some('D')) => {
+                                self.value.remove_many(state.cursor.end(&self.value), self.value.len());
+                                modified = true;
+                            },
+                            _ => capture = false,
+                        }
+
+                        if modified {
+                            let message = (self.on_input.as_ref().unwrap())(self.value.to_string());
+                            shell.publish(message);
+                            focus.updated_at = Instant::now();
+                            update_cache(state, &self.value);
+                        }
+
+                        if capture {
+                            shell.capture_event();
                         }
                     },
                     ControlMode::Insert => {
@@ -885,9 +903,7 @@ where
                                 if state.cursor.selection(&self.value).is_none() {
                                     if (modifiers.jump()) || modifiers.macos_command()
                                     {
-                                        state
-                                            .cursor
-                                            .select_range(state.cursor.start(&self.value), 0);
+                                        state.cursor.select_range(state.cursor.start(&self.value), 0);
                                     } else if modifiers.jump() {
                                         state.cursor.select_left_by_words(&self.value);
                                     }
