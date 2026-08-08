@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::{ExitReason, Execution};
 use crate::parser::*;
 use crate::{out, outln};
+use crate::utils;
 
 use itertools::Itertools;
 use rustix::process::Pid;
@@ -168,6 +169,7 @@ fn resolve(paths: &[PathBuf], cmd: &str) -> Option<PathBuf> {
     None
 }
 
+#[derive(Debug, Clone)]
 pub struct Job {
     pub status: watch::Receiver<VMStatus>,
 }
@@ -178,7 +180,7 @@ impl Job {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum VMStatus {
     #[default]
     None,
@@ -199,9 +201,14 @@ pub enum VMStatus {
 #[derive(Clone, Debug)]
 pub enum VMMessage {
     ChangedDir,
+    Done(Option<ExitReason>),
+    Waiting(Pid),
+    Job(Job),
 }
 
 pub struct VM {
+    pub fd3_slave: Option<OwnedFd>,
+    pub slave: Option<OwnedFd>,
     pub program: Arc<Vec<Block>>,
     pub pc: (usize, Option<usize>),
 
@@ -209,18 +216,59 @@ pub struct VM {
     pub waiting_on: Option<Pid>,
     pub child_exit_stack: Vec<ExitReason>,
 
-    // For communicating between top-level shell and subshells. Rx is inside parent_vm.jobs.
+    // For communicating between top-level shell and subshells. Rx is inside App.jobs.
     pub status: Option<watch::Sender<VMStatus>>,
 
     // For communicating between top-level shell and Fatty.
     pub msg_tx: Option<mpsc::Sender<VMMessage>>,
 
-    pub jobs: Vec<Job>,
     pub done: bool,
 }
 
 impl VM {
-    pub fn execute(&mut self, slave: Option<BorrowedFd<'_>>, slave_obj: Option<BorrowedFd<'_>>) {
+    // Explicitely write out result type, and do the Box::pin thing because execute calls
+    // execute_once which calls execute which calls execute_once... which makes rustc give up on
+    // deciding whether execute_once() is Send or not, which makes tokio:spawn() very sad.
+    pub fn execute(&mut self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            loop {
+                self.execute_once().await;
+                if self.done {
+                    break;
+                } else if let Some(pid) = self.waiting_on {
+                    match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) { //, rustix::process::WaitOptions::NOHANG) {
+                        Ok(Some((_, status))) => {
+                            let reason = ExitReason::from(status);
+
+                            match reason {
+                                ExitReason::Normal(_) => (),
+                                ExitReason::Signal { signal, .. } => out!("{}", utils::signal_to_string(signal)),
+                                ExitReason::Unknown { sigval: Some(s), .. } => out!("Signal({s})"),
+                                ExitReason::Unknown { sigval: None, .. } => out!("Exited (unknown)"),
+                            }
+
+                            match reason {
+                                ExitReason::Signal { cored: true, .. }
+                                | ExitReason::Unknown { cored: true, .. } => out!(" (core dumped)"),
+                                _ => (),
+                            }
+
+                            match reason {
+                                ExitReason::Normal(_) => (),
+                                _ => outln!(""), // Newline
+                            }
+
+                            self.handle_exit(pid, reason);
+                        },
+                        Ok(None) | Err(_) => unreachable!(),
+                        //Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
+                    }
+                }
+            }
+        })
+    }
+
+    pub async fn execute_once(&mut self) {
         assert!(!self.done);
         assert!(self.waiting_on.is_none());
 
@@ -245,7 +293,7 @@ impl VM {
                 }
 
                 if let Some(sender) = &self.msg_tx {
-                    sender.blocking_send(VMMessage::ChangedDir).unwrap();
+                    sender.send(VMMessage::ChangedDir).await.unwrap();
                 }
             }
             Instr::Run { command } => {
@@ -253,19 +301,23 @@ impl VM {
                 let mut pcmd = std::process::Command::new(&cmd);
                 pcmd.envs(&*self.env);
                 pcmd.args(args);
-                if let Some(slave) = slave {
+                if let Some(slave) = &self.slave {
+                    let slave = slave.as_fd();
                     pcmd.stdin(rustix::io::dup(slave).unwrap());
                     pcmd.stdout(rustix::io::dup(slave).unwrap());
                     pcmd.stderr(rustix::io::dup(slave).unwrap());
                     add_terminal_controller(&mut pcmd, slave);
                 }
-                if let Some(slave_obj) = slave_obj {
-                    add_stdobjout(&mut pcmd, slave_obj);
+                if let Some(fd3_slave) = &self.fd3_slave {
+                    add_stdobjout(&mut pcmd, fd3_slave.as_fd());
                 }
 
                 let child = pcmd.spawn().unwrap();
                 let pid = Pid::from_child(&child);
                 self.waiting_on = Some(pid);
+                if let Some(sender) = &self.msg_tx {
+                    sender.send(VMMessage::Waiting(pid)).await.unwrap();
+                }
                 if let Some(sender) = &self.status {
                     sender.send(VMStatus::Waiting { pid, command: command.clone() }).unwrap();
                 }
@@ -309,32 +361,32 @@ impl VM {
 
                     if let Some(writer) = writer.take() {
                         command.stdout(writer);
-                    } else if let Some(slave) = slave {
-                        command.stdout(rustix::io::dup(slave).unwrap());
+                    } else if let Some(slave) = &self.slave {
+                        command.stdout(rustix::io::dup(slave.as_fd()).unwrap());
                     }
 
                     if let Some(writer_obj) = writer_obj.take() {
                         add_stdobjout(&mut command, writer_obj.as_fd());
                         keep.push(writer_obj.into());
-                    } else if let Some(slave_obj) = slave_obj {
-                        add_stdobjout(&mut command, slave_obj.as_fd());
+                    } else if let Some(fd3_slave) = &self.fd3_slave {
+                        add_stdobjout(&mut command, fd3_slave.as_fd());
                     }
 
                     if let Some(reader) = reader {
                         command.stdin(reader);
-                    } else if let Some(slave) = slave {
-                        command.stdin(rustix::io::dup(slave).unwrap());
+                    } else if let Some(slave) = &self.slave {
+                        command.stdin(rustix::io::dup(slave.as_fd()).unwrap());
                     }
 
                     if let Some(reader_obj) = reader_obj {
                         add_stdobjin(&mut command, reader_obj.as_fd());
                         keep.push(reader_obj.into());
-                    } else if let Some(slave_obj) = slave_obj {
-                        add_stdobjin(&mut command, slave_obj.as_fd());
+                    } else if let Some(fd3_slave) = &self.fd3_slave {
+                        add_stdobjin(&mut command, fd3_slave.as_fd());
                     }
 
-                    if let Some(slave) = slave {
-                        command.stderr(rustix::io::dup(slave).unwrap());
+                    if let Some(slave) = &self.slave {
+                        command.stderr(rustix::io::dup(slave.as_fd()).unwrap());
                     }
 
                     let child = command.spawn().unwrap();
@@ -354,40 +406,34 @@ impl VM {
             Instr::CallAsync { block } => {
                 let (tx, rx) = watch::channel(VMStatus::default());
 
-                let mut vm = VM {
-                    env: self.env.clone(),
-                    program: self.program.clone(),
-                    pc: (*block, None),
-                    waiting_on: None,
-                    child_exit_stack: Vec::new(),
-                    jobs: Vec::new(),
-                    status: Some(tx),
-                    msg_tx: None,
-                    done: false,
-                };
-
+                let env = self.env.clone();
+                let program = self.program.clone();
+                let block = *block;
                 tokio::spawn(async move {
-                    loop {
-                        if vm.done {
-                            break;
-                        } else if let Some(pid) = vm.waiting_on {
-                            match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG) {
-                                Ok(Some((_, status))) => vm.handle_exit(pid, ExitReason::from(status)),
-                                Ok(None) => tokio::time::sleep(Duration::from_millis(20)).await,
-                                Err(_) => unreachable!(),
-                            }
-                        } else {
-                            vm.execute(None, None);
-                        }
-                    }
+                    let mut vm = VM {
+                        fd3_slave: None,
+                        slave: None,
+                        env,
+                        program,
+                        pc: (block, None),
+                        waiting_on: None,
+                        child_exit_stack: Vec::new(),
+                        status: Some(tx),
+                        msg_tx: None,
+                        done: false,
+                    };
+                    vm.execute().await;
                 });
 
-                self.jobs.push(Job {
-                    status: rx,
-                });
+                if let Some(sender) = &self.msg_tx {
+                    sender.send(VMMessage::Job(Job { status: rx, })).await.unwrap();
+                }
             },
             Instr::DoneProgram => {
                 self.done = true;
+                if let Some(sender) = &self.msg_tx {
+                    sender.send(VMMessage::Done(self.child_exit_stack.pop())).await.unwrap();
+                }
                 if let Some(sender) = &self.status {
                     sender.send_modify(move |previous| {
                         match std::mem::take(previous) {

@@ -1,3 +1,5 @@
+#![allow(irrefutable_let_patterns)]
+#![allow(dead_code)]
 #![allow(unused_imports)]
 
 use std::borrow::Cow;
@@ -108,10 +110,11 @@ fn main() -> iced::Result {
 
 pub struct Execution {
     fd3_master: Arc<OwnedFd>,
-    fd3_slave: OwnedFd,
 
     cmdline: String,
-    vm: vm::VM,
+    jobs: Vec<vm::Job>,
+    waiting_on: Option<Pid>,
+    done: bool,
     rx: Option<Arc<TokioMutex<mpsc::Receiver<vm::VMMessage>>>>,
     exit_reason: Option<ExitReason>,
     is_drained: bool,
@@ -138,19 +141,13 @@ pub struct Execution {
 }
 
 impl Execution {
-    pub fn new(cmdline: String, vm: vm::VM, rx: mpsc::Receiver<vm::VMMessage>, width: usize) -> Execution {
-        //let (fd3_master, fd3_slave) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::NONBLOCK).unwrap();
-        // Unix socket for bidi communication.. bad idea?
-        let (fd3_master, fd3_slave) = rustix::net::socketpair(
-            rustix::net::AddressFamily::UNIX,
-            rustix::net::SocketType::STREAM,
-            rustix::net::SocketFlags::NONBLOCK,
-            None,
-        ).unwrap();
+    pub fn new(cmdline: String, fd3_master: OwnedFd, rx: mpsc::Receiver<vm::VMMessage>, width: usize) -> Execution {
         Execution {
             fd3_master: Arc::new(fd3_master),
-            fd3_slave,
-            cmdline, vm,
+            cmdline,
+            jobs: Vec::new(),
+            waiting_on: None,
+            done: false,
             rx: Some(Arc::new(TokioMutex::new(rx))),
             term: term::Term::new(width),
             ansi: vte::ansi::Processor::new(),
@@ -247,8 +244,6 @@ pub enum Message {
     Animate,
     Input(String),
     Run,
-    ContinueProgram,
-    ChildExited(Pid, ExitReason),
     JobResolved(usize, usize),
     VMMessage(usize, vm::VMMessage),
     VMMessageClosed(usize),
@@ -363,8 +358,6 @@ impl App {
                 }
             },
             Message::Run => {
-                self.control.history_cursor = None;
-                self.control.mode = ControlMode::Term;
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
                         let program = match vm::compile(&self.path, &parsed) {
@@ -372,6 +365,9 @@ impl App {
                             Err(_) => return Task::none(),
                         };
                         //vm::print_program(&program);
+
+                        self.control.history_cursor = None;
+                        self.control.mode = ControlMode::Term;
 
                         let (font_width, font_height) = utils::measure_text(
                             "m", f32::INFINITY, FONT_SIZE, 1., term::Cell::default().iced_font()
@@ -394,77 +390,40 @@ impl App {
                             }
                         ).unwrap();
 
+                        // Unix socket for bidi communication.. bad idea?
+                        let (fd3_master, fd3_slave) = rustix::net::socketpair(
+                            rustix::net::AddressFamily::UNIX,
+                            rustix::net::SocketType::STREAM,
+                            rustix::net::SocketFlags::NONBLOCK,
+                            None,
+                        ).unwrap();
+
                         let cmdline = std::mem::take(&mut self.input);
                         let (tx, rx) = mpsc::channel(999);
-                        self.execs.push(Execution::new(
-                            cmdline,
-                            vm::VM {
-                                env: Arc::new(self.env.clone()),
-                                program: Arc::new(program),
-                                pc: (0, None),
-                                waiting_on: None,
-                                child_exit_stack: Vec::new(),
-                                jobs: Vec::new(),
-                                msg_tx: Some(tx),
-                                status: None,
-                                done: false,
-                            },
-                            rx,
-                            width as usize,
-                        ));
+                        let ex = Execution::new(cmdline, fd3_master, rx, width as usize);
+                        self.execs.push(ex);
 
-                        return self.update(Message::ContinueProgram);
+                        let mut vm = vm::VM {
+                            fd3_slave: Some(fd3_slave),
+                            slave: Some(self.slave.try_clone().unwrap()),
+                            env: Arc::new(self.env.clone()),
+                            program: Arc::new(program),
+                            pc: (0, None),
+                            waiting_on: None,
+                            child_exit_stack: Vec::new(),
+                            msg_tx: Some(tx),
+                            status: None,
+                            done: false,
+                        };
+
+                        return Task::perform(async move {
+                            vm.execute().await;
+                        }, |_| Message::None);
                     },
                     Err(err) => {
                         outln!("{err}");
                     }
                 }
-            },
-            Message::ContinueProgram => {
-                if let Some(current) = self.execs.last_mut() {
-                    assert!(current.vm.waiting_on == None);
-                    loop {
-                        current.vm.execute(Some(self.slave.as_fd()), Some(current.fd3_slave.as_fd()));
-
-                        if current.vm.done {
-                            current.exit_reason = current.vm.child_exit_stack.pop();
-                            current.cleanup();
-                            if self.control.mode == ControlMode::Term {
-                                if !self.execs.iter().any(|e| !e.vm.done) {
-                                    self.control.mode = ControlMode::Insert;
-                                }
-                            }
-                            break;
-                        } else if current.vm.waiting_on.is_some() {
-                            break;
-                        }
-                    }
-                }
-            },
-            Message::ChildExited(pid, reason) => {
-                match reason {
-                    ExitReason::Normal(_) => (),
-                    ExitReason::Signal { signal, .. } => out!("{}", utils::signal_to_string(signal)),
-                    ExitReason::Unknown { sigval: Some(s), .. } => out!("Signal({s})"),
-                    ExitReason::Unknown { sigval: None, .. } => out!("Exited (unknown)"),
-                }
-
-                match reason {
-                    ExitReason::Signal { cored: true, .. }
-                    | ExitReason::Unknown { cored: true, .. } => out!(" (core dumped)"),
-                    _ => (),
-                }
-
-                match reason {
-                    ExitReason::Normal(_) => (),
-                    _ => outln!(""), // Newline
-                }
-
-                if let Some(current) = self.execs.last_mut() {
-                    current.vm.handle_exit(pid, reason);
-                }
-
-                return self.update(Message::ContinueProgram);
             },
             Message::JobResolved(_exec_ind, _job_ind) => {
                 // todo
@@ -474,9 +433,27 @@ impl App {
                     exec.rx = None;
                 }
             }
-            Message::VMMessage(_exec_ind, message) => {
-                match message {
-                    vm::VMMessage::ChangedDir => return self.update(Message::DirectoryChanged),
+            Message::VMMessage(exec_ind, message) => {
+                if let Some(exec) = self.execs.get_mut(exec_ind) {
+                    match message {
+                        vm::VMMessage::ChangedDir => return self.update(Message::DirectoryChanged),
+                        vm::VMMessage::Job(job) => {
+                            exec.jobs.push(job);
+                        }
+                        vm::VMMessage::Waiting(pid) => {
+                            exec.waiting_on = Some(pid);
+                        }
+                        vm::VMMessage::Done(last_exit_reason) => {
+                            exec.done = true;
+                            exec.exit_reason = last_exit_reason;
+                            exec.cleanup();
+                            if self.control.mode == ControlMode::Term
+                                && !self.execs.iter().any(|e| !e.done)
+                            {
+                                self.control.mode = ControlMode::Insert;
+                            }
+                        }
+                    }
                 }
             },
             Message::Pty(exec_ind, is_fd3, buf) => {
@@ -554,7 +531,7 @@ impl App {
             },
             Message::PtyDrained(exec_ind, is_fd3) => {
                 let Some(exec) = self.execs.get_mut(exec_ind) else { return Task::none() };
-                if exec.vm.done {
+                if exec.done {
                     if is_fd3 {
                         exec.fd3_is_drained = true;
                     } else {
@@ -563,7 +540,7 @@ impl App {
                 }
             },
             Message::Signal(sig) => {
-                if let Some(current) = self.execs.last() && let Some(pid) = current.vm.waiting_on {
+                if let Some(current) = self.execs.last() && let Some(pid) = current.waiting_on {
                     kill_process(pid, sig).unwrap();
                 }
             },
@@ -613,17 +590,6 @@ impl App {
             }
         });
 
-        let wait = match self.execs.last() {
-            Some(Execution {
-                vm: vm::VM {
-                    waiting_on: Some(pid),
-                    ..
-                },
-                ..
-            }) => wait_on(*pid).with(*pid).map(|(pid, exited)| Message::ChildExited(pid, exited)),
-            _ => Subscription::none(),
-        };
-
         let jobs = watch_jobs(self);
         let vmwatch = watch_vms(self);
 
@@ -645,7 +611,7 @@ impl App {
             Subscription::none()
         };
 
-        Subscription::batch([polls, keys, wait, jobs, vmwatch, fswatch, animation])
+        Subscription::batch([polls, keys, jobs, vmwatch, fswatch, animation])
     }
 
     fn view(&self) -> Elem<'_> {
@@ -764,7 +730,7 @@ impl App {
             .spacing(1);
 
         for exec in &self.execs {
-            for job in &exec.vm.jobs {
+            for job in &exec.jobs {
                 jobs = jobs.push(
                     container({
                         let e: Elem<'_> = match &*job.status.borrow() {
@@ -840,7 +806,7 @@ impl App {
                                     FONT_SIZE,
                                     |term, theme, color| term.resolve(theme, color),
                                     move |c| Message::PtyInput(i, c),
-                                    i == self.execs.len() - 1 && !exec.vm.done
+                                    i == self.execs.len() - 1 && !exec.done
                                 )
                             )
                                 .padding(1)
@@ -870,7 +836,7 @@ impl App {
             input.add_annotation(s, e);
         }
 
-        if let Some(last) = self.execs.last() && !last.vm.done {
+        if let Some(last) = self.execs.last() && !last.done {
             // Input disabled.
         } else {
             input = input
@@ -1025,26 +991,6 @@ pub fn fswatch(path: PathBuf) -> Subscription<OsString> {
     })
 }
 
-pub fn wait_on(pid: Pid) -> Subscription<ExitReason> {
-    Subscription::run_with(pid, |pid| stream::unfold(Some(*pid), |state| async move {
-        let pid = state?;
-
-        loop {
-            let result = tokio::task::spawn_blocking(move || {
-                rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG)
-            })
-            .await
-            .expect("spawn_blocking panicked");
-
-            match result {
-                Ok(Some((_, status))) => return Some((ExitReason::from(status), None)),
-                Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
-                Err(_) => unreachable!(),
-            }
-        }
-    }))
-}
-
 fn watch_jobs(app: &App) -> Subscription<Message> {
     #[derive(Clone)]
     struct Watching {
@@ -1066,8 +1012,7 @@ fn watch_jobs(app: &App) -> Subscription<Message> {
         .iter()
         .enumerate()
         .flat_map(|(exec_ind, exec)| {
-            exec.vm
-                .jobs
+            exec.jobs
                 .iter()
                 .enumerate()
                 .filter(|(_, job)| !job.is_done())
@@ -1148,7 +1093,7 @@ fn watch_vms(app: &App) -> Subscription<Message> {
                     let futures: Vec<_> = receivers
                         .iter()
                         .map(|Watching { exec_ind, rx }| {
-                            let mut rx = rx.clone();
+                            let rx = rx.clone();
                             let exec_idx = *exec_ind;
                             Box::pin(async move {
                                 match rx.lock().await.recv().await {
