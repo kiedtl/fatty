@@ -9,6 +9,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+pub use minicbor;
 use minicbor::data::{Int, Tag, Type};
 use minicbor::{decode, Decoder};
 use minicbor::{encode, Encoder};
@@ -843,17 +844,36 @@ pub fn stdout_writer() -> Option<StdoutEncoder> {
 
 pub struct StreamingTable<'a, W: encode::Write> {
     e: &'a mut Encoder<W>,
-    width: usize,
+    width: Option<usize>, // None if not known yet (i.e. headers not yet provided)
 }
 
 impl<'a, W: encode::Write> StreamingTable<'a, W> {
+    pub fn headers<'v, T, I>(&mut self, headers: I) -> Result<(), encode::Error<W::Error>>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Value<'v>>,
+    {
+        assert!(self.width.is_none());
+
+        let header: Vec<_> = headers.into_iter().map(|i| i.into()).collect();
+        let width = header.len();
+        self.e.array(width as _)?;
+        for item in header {
+            item.write(self.e)?;
+        }
+
+        self.width = Some(width);
+        self.e.begin_array()?;
+        Ok(())
+    }
+
     pub fn row<'v, R>(&mut self, row: R) -> Result<(), encode::Error<W::Error>>
     where
         R: IntoIterator<Item = Value<'v>>,
         R::IntoIter: std::iter::ExactSizeIterator
     {
         let row = row.into_iter();
-        if row.len() != self.width {
+        if row.len() != self.width.unwrap() {
             todo!();
         }
 
@@ -875,6 +895,13 @@ impl<W: encode::Write> Drop for StreamingTable<'_, W> {
     }
 }
 
+pub fn stream_table_no_headers<'a, 'v, W: encode::Write>(e: &'a mut Encoder<W>)
+    -> Result<StreamingTable<'a, W>, encode::Error<W::Error>>
+{
+    e.tag(Tag::new(TABLE_TAG))?;
+    Ok(StreamingTable { e, width: None })
+}
+
 pub fn stream_table<'a, 'v, T, I, W: encode::Write>(e: &'a mut Encoder<W>, headers: I)
     -> Result<StreamingTable<'a, W>, encode::Error<W::Error>>
 where
@@ -882,16 +909,9 @@ where
     T: Into<Value<'v>>,
 {
     e.tag(Tag::new(TABLE_TAG))?;
-
-    let header: Vec<_> = headers.into_iter().map(|i| i.into()).collect();
-    let width = header.len();
-    e.array(width as _)?;
-    for item in header {
-        item.write(e)?;
-    }
-
-    e.begin_array()?;
-    Ok(StreamingTable { e, width })
+    let mut stt = StreamingTable { e, width: None };
+    stt.headers(headers)?;
+    Ok(stt)
 }
 
 pub type BufferDecoder<'a> = decode::Decoder<'a>;

@@ -10,9 +10,10 @@ use std::time::Duration;
 use crate::{ExitReason, Execution};
 use crate::parser::*;
 use crate::{out, outln};
-use crate::utils;
+use crate::utils::{self, UnownedFd};
 
 use itertools::Itertools;
+use futures::future::{FutureExt, Shared, BoxFuture};
 use rustix::process::Pid;
 use rustix::fd::{FromRawFd, AsFd, AsRawFd, OwnedFd, BorrowedFd};
 use tokio::sync::{mpsc, watch};
@@ -38,6 +39,7 @@ impl Command2 {
 #[derive(Debug, Clone)]
 pub enum RunPipelineItem {
     Command(Command2),
+    Where { block: usize },
     // Query(Query),
 }
 
@@ -52,9 +54,8 @@ pub enum Instr {
         items: Vec<RunPipelineItem>,
         // cond: RunCondition,
     },
-    CallAsync {
-        block: usize,
-    },
+    // Where { func: usize },
+    CallAsync { block: usize },
     DoneProgram,
 }
 
@@ -90,6 +91,7 @@ fn compile_ast(
 ) -> Result<(), CompileError>
 {
     match ast {
+        Ast::Stmt(_lc, Stmt::Where(_)) => todo!(),
         Ast::Stmt(_lc, Stmt::Command(command)) => {
             if let Some(command_str) = command.argv.get(0) {
                 match command_str.as_str() {
@@ -121,6 +123,17 @@ fn compile_ast(
                                 let orig = cmd.clone();
                                 Ok(RunPipelineItem::Command(Command2 { orig, args, path }))
                             },
+                            PipelineItem::Where(func) => {
+                                if let Some(func) = func {
+                                    let mut b = Block { contents: Vec::new() };
+                                    compile_ast(path, func, &mut b.contents, blocks)?;
+                                    b.contents.push(Instr::DoneProgram);
+                                    blocks.push(b);
+                                    Ok(RunPipelineItem::Where { block: blocks.len() - 1 })
+                                } else {
+                                    Ok(RunPipelineItem::Where { block: 0 })
+                                }
+                            },
                             // PipelineItem::Query(q) => {
                             //     Ok(RunPipelineItem::Query(q.clone()))
                             // },
@@ -147,18 +160,23 @@ fn compile_ast(
 }
 
 fn resolve(paths: &[PathBuf], cmd: &str) -> Option<PathBuf> {
+    fn is_valid(met: Option<fs::Metadata>) -> bool {
+        met
+            .map(|m| !m.file_type().is_dir() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+
+    if cmd.as_bytes().contains(&b'/') {
+        let path = PathBuf::from(cmd);
+        return is_valid(fs::metadata(&path).ok()).then_some(path);
+    }
+
     for path in paths {
         match fs::read_dir(path) {
             Ok(iter) => {
                 for item in iter {
                     let Ok(item) = item else { continue };
-                    if item.file_name() == OsStr::new(cmd)
-                        && item.metadata()
-                            .map(|m|
-                                !m.file_type().is_dir() && m.permissions().mode() & 0o100 != 0
-                            )
-                            .unwrap_or(false)
-                    {
+                    if item.file_name() == OsStr::new(cmd) && is_valid(item.metadata().ok()) {
                         return Some(item.path().to_owned());
                     }
                 }
@@ -169,7 +187,7 @@ fn resolve(paths: &[PathBuf], cmd: &str) -> Option<PathBuf> {
     None
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Job {
     pub status: watch::Receiver<VMStatus>,
 }
@@ -180,13 +198,13 @@ impl Job {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default, Clone)]
 pub enum VMStatus {
     #[default]
     None,
     Waiting {
-        command: Command2,
-        pid: Pid,
+        item: RunPipelineItem,
+        on: WaitingOn2,
     },
     Done {
         command: Command2,
@@ -198,12 +216,24 @@ pub enum VMStatus {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum VMMessage {
     ChangedDir,
     Done(Option<ExitReason>),
-    Waiting(Pid),
+    Waiting(WaitingOn2),
     Job(Job),
+}
+
+#[derive(Clone)]
+pub enum WaitingOn {
+    Pid(Pid),
+    Builtin(Shared<BoxFuture<'static, ()>>),
+}
+
+#[derive(Clone)]
+pub enum WaitingOn2 {
+    Pid(Pid),
+    Builtin(tokio::task::AbortHandle),
 }
 
 pub struct VM {
@@ -213,7 +243,7 @@ pub struct VM {
     pub pc: (usize, Option<usize>),
 
     pub env: Arc<HashMap<OsString, OsString>>,
-    pub waiting_on: Option<Pid>,
+    pub waiting_on: Option<WaitingOn>,
     pub child_exit_stack: Vec<ExitReason>,
 
     // For communicating between top-level shell and subshells. Rx is inside App.jobs.
@@ -235,33 +265,46 @@ impl VM {
                 self.execute_once().await;
                 if self.done {
                     break;
-                } else if let Some(pid) = self.waiting_on {
-                    match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) { //, rustix::process::WaitOptions::NOHANG) {
-                        Ok(Some((_, status))) => {
-                            let reason = ExitReason::from(status);
+                }
 
-                            match reason {
-                                ExitReason::Normal(_) => (),
-                                ExitReason::Signal { signal, .. } => out!("{}", utils::signal_to_string(signal)),
-                                ExitReason::Unknown { sigval: Some(s), .. } => out!("Signal({s})"),
-                                ExitReason::Unknown { sigval: None, .. } => out!("Exited (unknown)"),
-                            }
+                match self.waiting_on.take() {
+                    None => (),
+                    Some(WaitingOn::Builtin(jh)) => jh.await,
+                    Some(WaitingOn::Pid(pid)) => {
+                        match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
+                            Ok(Some((_, status))) => {
+                                let reason = ExitReason::from(status);
 
-                            match reason {
-                                ExitReason::Signal { cored: true, .. }
-                                | ExitReason::Unknown { cored: true, .. } => out!(" (core dumped)"),
-                                _ => (),
-                            }
+                                match reason {
+                                    ExitReason::Normal(_) => (),
+                                    ExitReason::Signal { signal, .. } => out!("{}", utils::signal_to_string(signal)),
+                                    ExitReason::Unknown { sigval: Some(s), .. } => out!("Signal({s})"),
+                                    ExitReason::Unknown { sigval: None, .. } => out!("Exited (unknown)"),
+                                }
 
-                            match reason {
-                                ExitReason::Normal(_) => (),
-                                _ => outln!(""), // Newline
-                            }
+                                match reason {
+                                    ExitReason::Signal { cored: true, .. }
+                                    | ExitReason::Unknown { cored: true, .. } => out!(" (core dumped)"),
+                                    _ => (),
+                                }
 
-                            self.handle_exit(pid, reason);
-                        },
-                        Ok(None) | Err(_) => unreachable!(),
-                        //Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
+                                match reason {
+                                    ExitReason::Normal(_) => (),
+                                    _ => outln!(""), // Newline
+                                }
+
+                                self.child_exit_stack.push(reason);
+                                if let Some(sender) = &self.status {
+                                    sender.send_modify(move |previous| {
+                                        let VMStatus::Waiting {
+                                            item: RunPipelineItem::Command(command), ..
+                                        } = std::mem::take(previous) else { unreachable!() };
+                                        *previous = VMStatus::Done { command, reason };
+                                    });
+                                }
+                            },
+                            Ok(None) | Err(_) => unreachable!(),
+                        }
                     }
                 }
             }
@@ -313,13 +356,21 @@ impl VM {
                 }
 
                 let child = pcmd.spawn().unwrap();
-                let pid = Pid::from_child(&child);
-                self.waiting_on = Some(pid);
+
+                let on = WaitingOn::Pid(Pid::from_child(&child));
+                self.waiting_on = Some(on);
+
                 if let Some(sender) = &self.msg_tx {
-                    sender.send(VMMessage::Waiting(pid)).await.unwrap();
+                    let on = WaitingOn2::Pid(Pid::from_child(&child));
+                    sender.send(VMMessage::Waiting(on)).await.unwrap();
                 }
+
                 if let Some(sender) = &self.status {
-                    sender.send(VMStatus::Waiting { pid, command: command.clone() }).unwrap();
+                    let on = WaitingOn2::Pid(Pid::from_child(&child));
+                    sender.send(VMStatus::Waiting {
+                        on,
+                        item: RunPipelineItem::Command(command.clone())
+                    }).unwrap();
                 }
             },
             Instr::RunPipeline { items } => {
@@ -333,10 +384,9 @@ impl VM {
                 let mut next_reader_obj = None;
                 let mut writer_obj = None;
 
-                let mut last_pid = None;
+                let mut last_one = None;
 
                 for (i, item) in items.iter().enumerate() {
-                    let RunPipelineItem::Command(command) = item else { unreachable!() };
                     let mut keep = Vec::<OwnedFd>::new();
                     reader = next_reader;
                     next_reader = None;
@@ -354,52 +404,77 @@ impl VM {
                         writer_obj = Some(fw_obj);
                     }
 
-                    let (cmd, args) = prepare_invocation(&command);
-                    let mut command = std::process::Command::new(cmd);
-                    command.envs(&*self.env);
-                    command.args(args);
+                    match item {
+                        RunPipelineItem::Where { block } => {
+                            let writer = writer_obj.take()
+                                .map(|w| Box::new(w) as Box<dyn std::io::Write + Send>)
+                                .or_else(|| self.fd3_slave.as_ref().map(|fd3| Box::new(UnownedFd::new(fd3.as_fd())) as _))
+                                .unwrap();
+                            let reader = reader_obj.take()
+                                .map(|r| Box::new(r) as Box<dyn std::io::Read + Send>)
+                                .or_else(|| self.fd3_slave.as_ref().map(|fd3| Box::new(UnownedFd::new(fd3.as_fd())) as _))
+                                .unwrap();
+                            let program = self.program.clone();
+                            let block = *block;
+                            let jh = tokio::spawn(async move {
+                                builtin::filter(program, block, reader, writer).await.unwrap();
+                            });
+                            let ah = jh.abort_handle();
+                            let shjh = async move { jh.await.unwrap(); }.boxed().shared();
+                            last_one = Some((WaitingOn::Builtin(shjh), WaitingOn2::Builtin(ah)));
+                        },
+                        RunPipelineItem::Command(command) => {
+                            let (cmd, args) = prepare_invocation(&command);
+                            let mut command = std::process::Command::new(cmd);
+                            command.envs(&*self.env);
+                            command.args(args);
 
-                    if let Some(writer) = writer.take() {
-                        command.stdout(writer);
-                    } else if let Some(slave) = &self.slave {
-                        command.stdout(rustix::io::dup(slave.as_fd()).unwrap());
+                            if let Some(writer) = writer.take() {
+                                command.stdout(writer);
+                            } else if let Some(slave) = &self.slave {
+                                command.stdout(rustix::io::dup(slave.as_fd()).unwrap());
+                            }
+
+                            if let Some(writer_obj) = writer_obj.take() {
+                                add_stdobjout(&mut command, writer_obj.as_fd());
+                                keep.push(writer_obj.into());
+                            } else if let Some(fd3_slave) = &self.fd3_slave {
+                                add_stdobjout(&mut command, fd3_slave.as_fd());
+                            }
+
+                            if let Some(reader) = reader {
+                                command.stdin(reader);
+                            } else if let Some(slave) = &self.slave {
+                                command.stdin(rustix::io::dup(slave.as_fd()).unwrap());
+                            }
+
+                            if let Some(reader_obj) = reader_obj {
+                                add_stdobjin(&mut command, reader_obj.as_fd());
+                                keep.push(reader_obj.into());
+                            } else if let Some(fd3_slave) = &self.fd3_slave {
+                                add_stdobjin(&mut command, fd3_slave.as_fd());
+                            }
+
+                            if let Some(slave) = &self.slave {
+                                command.stderr(rustix::io::dup(slave.as_fd()).unwrap());
+                            }
+
+                            let child = command.spawn().unwrap();
+                            last_one = Some((
+                                    WaitingOn::Pid(Pid::from_child(&child)),
+                                    WaitingOn2::Pid(Pid::from_child(&child))
+                            ));
+                            std::mem::drop(keep);
+                        }
                     }
-
-                    if let Some(writer_obj) = writer_obj.take() {
-                        add_stdobjout(&mut command, writer_obj.as_fd());
-                        keep.push(writer_obj.into());
-                    } else if let Some(fd3_slave) = &self.fd3_slave {
-                        add_stdobjout(&mut command, fd3_slave.as_fd());
-                    }
-
-                    if let Some(reader) = reader {
-                        command.stdin(reader);
-                    } else if let Some(slave) = &self.slave {
-                        command.stdin(rustix::io::dup(slave.as_fd()).unwrap());
-                    }
-
-                    if let Some(reader_obj) = reader_obj {
-                        add_stdobjin(&mut command, reader_obj.as_fd());
-                        keep.push(reader_obj.into());
-                    } else if let Some(fd3_slave) = &self.fd3_slave {
-                        add_stdobjin(&mut command, fd3_slave.as_fd());
-                    }
-
-                    if let Some(slave) = &self.slave {
-                        command.stderr(rustix::io::dup(slave.as_fd()).unwrap());
-                    }
-
-                    let child = command.spawn().unwrap();
-                    last_pid = Some(Pid::from_child(&child));
-                    std::mem::drop(keep);
                 }
 
-                let RunPipelineItem::Command(last) = items.last().unwrap() else { unreachable!() };
-                self.waiting_on = last_pid;
+                let (wo, wo2) = last_one.unwrap();
+                self.waiting_on = Some(wo);
                 if let Some(sender) = &self.status {
                     sender.send(VMStatus::Waiting {
-                        command: last.clone(),
-                        pid: last_pid.unwrap(),
+                        item: items.last().unwrap().clone(),
+                        on: wo2,
                     }).unwrap();
                 }
             },
@@ -446,22 +521,6 @@ impl VM {
             },
         }
     }
-
-    pub fn handle_exit(&mut self, pid: Pid, reason: ExitReason) {
-        if Some(pid) == self.waiting_on {
-            self.waiting_on = None;
-            self.child_exit_stack.push(reason);
-            if let Some(sender) = &self.status {
-                sender.send_modify(move |previous| {
-                    let VMStatus::Waiting { command, .. } = std::mem::take(previous)
-                        else { unreachable!() };
-                    *previous = VMStatus::Done { command, reason };
-                });
-            }
-        } else {
-            unreachable!();
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -480,7 +539,7 @@ pub fn print_program(p: &[Block]) {
                         for item in items {
                             match item {
                                 RunPipelineItem::Command(c) => println!("  - run {}: {}", c.path.display(), c.args.iter().map(|t| t.to_string()).join(" ")),
-                                // RunPipelineItem::Query(q) => println!("  - query {}", q.items.iter().map(|t| t.to_string()).join(" ")),
+                                RunPipelineItem::Where { block } => println!("  - where {block}"),
                             }
                         }
                     },
@@ -580,4 +639,103 @@ fn expand_glob(token: &str) -> Vec<String> {
 
     // bash behaviour: if no match, pass the literal token through
     if matches.is_empty() { vec![token.to_owned()] } else { matches }
+}
+
+mod builtin {
+    use super::*;
+
+    use std::io::Read;
+    use anyhow::Result;
+    use bwine::{self, Value, Token};
+
+    pub async fn filter(
+        program: Arc<Vec<Block>>,
+        block: usize,
+        mut reader: Box<dyn std::io::Read + Send>,
+        writer: Box<dyn std::io::Write + Send>
+    ) -> Result<()> {
+        _ = program;
+        _ = block;
+
+        let mut r = 0;
+
+        let mut sr = bwine::StreamingReader::new();
+        let mut buf = Vec::<u8>::new();
+        let mut ast = Vec::new();
+        let mut consumed = 0;
+
+        #[derive(Debug)]
+        enum S { V, H, PT, PA }
+        let mut s = S::V;
+        let mut ai = 0;
+
+        let mut writer = bwine::minicbor::encode::Encoder::new(
+            bwine::minicbor::encode::write::Writer::new(writer)
+        );
+        let mut stt = bwine::stream_table_no_headers(&mut writer).unwrap();
+
+        while !sr.is_done() {
+            let mut tmp = [0u8; 1024];
+            let n = reader.read(&mut tmp)?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[0..n]);
+
+            while !sr.is_done() {
+                match sr.read_once(&buf[consumed..], &mut ast) {
+                    Ok(nn) => consumed += nn,
+                    Err(e) if e.is_end_of_input() => break,
+                    Err(e) => {
+                        eprintln!("Error: {e:?}");
+                        return Ok(());
+                    },
+                }
+
+                if ai < ast.len() {
+                    match s {
+                        S::V => {
+                            match &ast[ai] {
+                                Token::Table => s = S::H,
+                                Token::Array(_) => s = S::PA,
+                                _ => {
+                                    outln!("Expected table or array.");
+                                    return Ok(());
+                                }
+                            }
+                            ai += 1;
+                        }
+                        S::H => {
+                            if let Token::Array(_) = &ast[ai]
+                                && let Some((ns, Value::Array(harr))) = Token::collect(&ast[ai..])
+                            {
+                                ai += ns + 1; // Skip next Token::Array that begins rows.
+                                s = S::PT;
+                                stt.headers(harr).unwrap();
+                            }
+                        }
+                        S::PT => {
+                            if let Token::Array(_) = &ast[ai]
+                                && let Some((ns, Value::Array(row))) = Token::collect(&ast[ai..])
+                            {
+                                r += 1;
+                                if let Value::Int(s) = row[3] && s > 100 {
+                                    stt.row(row).unwrap();
+                                }
+                                ai += ns;
+                            }
+                        },
+                        S::PA => todo!(),
+                    }
+                }
+            }
+
+            buf.drain(..consumed);
+            consumed = 0;
+        }
+
+        stt.end();
+
+        Ok(())
+    }
 }

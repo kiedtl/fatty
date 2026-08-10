@@ -75,7 +75,7 @@ pub enum Connector {
 pub enum PipelineItem {
     Command(Command),
     Sub(Box<Ast>),
-    // Query(Query),
+    Where(Option<Box<Ast>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +85,7 @@ pub enum Stmt {
     Sub(Box<Ast>),
     Background(Box<Ast>),
     Command(Command),
+    Where(Option<Box<Ast>>),
     // Query(Query),
 }
 
@@ -171,6 +172,7 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
                 match parse_ast(pair)? {
                     Ast::Stmt(_, Stmt::Command(c)) => items.push(PipelineItem::Command(c)),
                     Ast::Stmt(_, Stmt::Sub(s)) => items.push(PipelineItem::Sub(s)),
+                    Ast::Stmt(_, Stmt::Where(s)) => items.push(PipelineItem::Where(s)),
                     // Ast::Stmt(_, Stmt::Query(q)) => items.push(PipelineItem::Query(q)),
                     _ => unreachable!(),
                 }
@@ -180,8 +182,17 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
         },
         // Rule::query => Ast::Stmt(lc, Stmt::Query(parse_query(pair.into_inner())?)),
         Rule::sub => Ast::Stmt(lc, Stmt::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?))),
+        Rule::s_where => {
+            let s = if let Some(sub) = pair.into_inner().next() {
+                Some(Box::new(parse_ast(sub)?))
+            } else {
+                None
+            };
+            Ast::Stmt(lc, Stmt::Where(s))
+        }
         Rule::command => Ast::Stmt(lc, Stmt::Command(parse_command(pair.into_inner())?)),
 
+        Rule::special => unreachable!(),
         Rule::token => unreachable!(),
         Rule::single_quoted => unreachable!(),
         Rule::double_quoted => unreachable!(),

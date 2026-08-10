@@ -4,14 +4,20 @@ program       =  { SOI ~ stmt+ ~ EOI }
 stmt          =  { background | chain | pipeline | sub | command }
 background    =  { (chain | pipeline | sub | command) ~ "&" }
 chain         =  { (pipeline | sub | command) ~ (connector ~ (pipeline | sub | command))+ }
-pipeline      =  { (sub | command) ~ ("|" ~ (sub | command))+ }
+pipeline      =  { (sub | special | command | special) ~ ("|" ~ (sub | special | command | special))+ }
 sub           =  { "(" ~ stmt+ ~ ")" }
 command       =  { token+ }
 
 connector     =  { "&&" | "||" }
 
+special       = _{ s_where }
+s_where       =  { "where" ~ sub? }
+//until       =  { "until" ~ sub }
+//break       =  { "break" }
+//continue    =  { "continue" }
+
 token         = _{ single_quoted | double_quoted | unquoted } // | var }
-// var           =  { "$" ~ ('a'..'z' | 'A'..'Z' | '0'..'9')+ }
+// var           =  { "$" ~ ('a'..'z' | 'A'..'Z' | '0'..'9' | '_')+ }
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 double_quoted = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
 unquoted      = @{

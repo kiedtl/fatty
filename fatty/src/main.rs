@@ -113,7 +113,7 @@ pub struct Execution {
 
     cmdline: String,
     jobs: Vec<vm::Job>,
-    waiting_on: Option<Pid>,
+    waiting_on: Option<vm::WaitingOn2>,
     done: bool,
     rx: Option<Arc<TokioMutex<mpsc::Receiver<vm::VMMessage>>>>,
     exit_reason: Option<ExitReason>,
@@ -238,7 +238,7 @@ pub enum ControlMessage {
     HistoryDown,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Message {
     None,
     Animate,
@@ -360,6 +360,7 @@ impl App {
             Message::Run => {
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
+                        println!("parsed: {parsed:?}");
                         let program = match vm::compile(&self.path, &parsed) {
                             Ok(p) => p,
                             Err(_) => return Task::none(),
@@ -440,8 +441,8 @@ impl App {
                         vm::VMMessage::Job(job) => {
                             exec.jobs.push(job);
                         }
-                        vm::VMMessage::Waiting(pid) => {
-                            exec.waiting_on = Some(pid);
+                        vm::VMMessage::Waiting(waiting_on) => {
+                            exec.waiting_on = Some(waiting_on);
                         }
                         vm::VMMessage::Done(last_exit_reason) => {
                             exec.done = true;
@@ -540,8 +541,11 @@ impl App {
                 }
             },
             Message::Signal(sig) => {
-                if let Some(current) = self.execs.last() && let Some(pid) = current.waiting_on {
-                    kill_process(pid, sig).unwrap();
+                if let Some(current) = self.execs.last() && let Some(waiting_on) = &current.waiting_on {
+                    match waiting_on {
+                        vm::WaitingOn2::Pid(pid) => kill_process(*pid, sig).unwrap(),
+                        vm::WaitingOn2::Builtin(abort_h) => abort_h.abort(),
+                    }
                 }
             },
             Message::DirectoryChanged => {
@@ -734,8 +738,15 @@ impl App {
                 jobs = jobs.push(
                     container({
                         let e: Elem<'_> = match &*job.status.borrow() {
-                            VMStatus::Waiting { command, pid }
-                                => text(format!("{} ({})", command.to_string(), pid)).into(),
+                            VMStatus::Waiting {
+                                item: vm::RunPipelineItem::Command(c),
+                                on: vm::WaitingOn2::Pid(pid)
+                            } => text(format!("{} ({})", c.to_string(), pid)).into(),
+                            VMStatus::Waiting {
+                                item: vm::RunPipelineItem::Where { .. },
+                                ..
+                            } => text(format!("where <todo>")).into(),
+                            VMStatus::Waiting { .. } => unreachable!(),
                             VMStatus::Done { command, reason }
                             | VMStatus::Resolved { command: Some(command), reason: Some(reason) }
                                 => row![
