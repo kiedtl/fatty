@@ -116,6 +116,7 @@ pub struct Execution {
     waiting_on: Option<vm::WaitingOn2>,
     done: bool,
     rx: Option<Arc<TokioMutex<mpsc::Receiver<vm::VMMessage>>>>,
+    stack: Vec<bwine::Value<'static>>,
     exit_reason: Option<ExitReason>,
     is_drained: bool,
     fd3_is_drained: bool,
@@ -161,6 +162,7 @@ impl Execution {
             bwine_consumed: 0,
             document: bolger::ui::Document::new(),
             exit_reason: None,
+            stack: Vec::new(),
             is_drained: false,
             fd3_is_drained: false,
             b_err: false,
@@ -360,7 +362,6 @@ impl App {
             Message::Run => {
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
-                        println!("parsed: {parsed:?}");
                         let program = match vm::compile(&self.path, &parsed) {
                             Ok(p) => p,
                             Err(_) => return Task::none(),
@@ -405,11 +406,14 @@ impl App {
                         self.execs.push(ex);
 
                         let mut vm = vm::VM {
-                            fd3_slave: Some(fd3_slave),
-                            slave: Some(self.slave.try_clone().unwrap()),
+                            fd3_slave: Some(Arc::new(fd3_slave)),
+                            slave: Some(Arc::new(self.slave.try_clone().unwrap())),
                             env: Arc::new(self.env.clone()),
                             program: Arc::new(program),
                             pc: (0, None),
+                            stack: Vec::new(),
+                            scope: Vec::new(),
+                            rstack: Vec::new(),
                             waiting_on: None,
                             child_exit_stack: Vec::new(),
                             msg_tx: Some(tx),
@@ -444,9 +448,10 @@ impl App {
                         vm::VMMessage::Waiting(waiting_on) => {
                             exec.waiting_on = Some(waiting_on);
                         }
-                        vm::VMMessage::Done(last_exit_reason) => {
+                        vm::VMMessage::Done { last_exit_reason, stack } => {
                             exec.done = true;
                             exec.exit_reason = last_exit_reason;
+                            exec.stack = stack;
                             exec.cleanup();
                             if self.control.mode == ControlMode::Term
                                 && !self.execs.iter().any(|e| !e.done)
@@ -774,15 +779,13 @@ impl App {
             for (i, exec) in self.execs.iter().enumerate() {
                 col = col.push(
                     column![
-                        container(
-                            row![
-                                container(
-                                    text(&exec.cmdline)
-                                )
-                                    .width(Length::Fill),
-                                exit_reason(exec.exit_reason),
-                            ],
-                        )
+                        container(row![
+                            container(
+                                text(&exec.cmdline)
+                            )
+                                .width(Length::Fill),
+                            exit_reason(exec.exit_reason),
+                        ])
                             .class(CS::Box)
                             .padding(3),
                         if !exec.document.elements.is_empty() {
@@ -824,6 +827,11 @@ impl App {
                                 .width(Length::Fill)
                                 .into()
                         },
+                        Column::with_children(
+                            exec.stack.iter().map(|item|
+                                bwine_ui::to_iced(item, self.vsize.get())
+                            )
+                        ),
                         // text({
                         //     let mut s = format!("p_stack: {}; ", exec.p_stack);
                         //     if exec.q_flag {

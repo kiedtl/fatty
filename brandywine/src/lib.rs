@@ -482,7 +482,7 @@ impl StreamingReader {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value<'a> {
     Path(Cow<'a, Path>),
     // type 0/1

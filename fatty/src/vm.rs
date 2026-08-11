@@ -1,6 +1,7 @@
-use std::fs;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -10,8 +11,9 @@ use std::time::Duration;
 use crate::{ExitReason, Execution};
 use crate::parser::*;
 use crate::{out, outln};
-use crate::utils::{self, UnownedFd};
+use crate::utils::{self, FdRw};
 
+use bwine::Value;
 use itertools::Itertools;
 use futures::future::{FutureExt, Shared, BoxFuture};
 use rustix::process::Pid;
@@ -56,7 +58,12 @@ pub enum Instr {
     },
     // Where { func: usize },
     CallAsync { block: usize },
-    DoneProgram,
+    Call { block: usize },
+    Load(Token),
+    Op(Operator),
+    Negate,
+    Pop,
+    Return,
 }
 
 #[derive(Debug, Clone)]
@@ -77,10 +84,32 @@ pub fn compile(path: &[PathBuf], ast: &[Ast]) -> Result<Vec<Block>, CompileError
         compile_ast(path, ast, &mut base_block, &mut blocks)?;
     }
 
-    base_block.push(Instr::DoneProgram);
+    base_block.push(Instr::Return);
     blocks[0].contents = base_block;
 
     Ok(blocks)
+}
+
+fn compile_operand(
+    path: &[PathBuf],
+    operand: &Operand,
+    out: &mut Vec<Instr>,
+    blocks: &mut Vec<Block>
+) -> Result<(), CompileError>
+{
+    match operand {
+        Operand::Token(tok) => {
+            out.push(Instr::Load(tok.clone()));
+        },
+        Operand::Sub(body) => {
+            let mut b = Block { contents: Vec::new() };
+            compile_ast(path, body, &mut b.contents, blocks)?;
+            b.contents.push(Instr::Return);
+            blocks.push(b);
+            out.push(Instr::Call { block: blocks.len() - 1 });
+        },
+    }
+    Ok(())
 }
 
 fn compile_ast(
@@ -91,11 +120,29 @@ fn compile_ast(
 ) -> Result<(), CompileError>
 {
     match ast {
+        Ast::Stmt(_lc, Stmt::Sub(body)) => {
+            let mut b = Block { contents: Vec::new() };
+            compile_ast(path, body, &mut b.contents, blocks)?;
+            b.contents.push(Instr::Return);
+            blocks.push(b);
+            out.push(Instr::Call { block: blocks.len() - 1 });
+        }
+        Ast::Stmt(_lc, Stmt::BoolExpr(BoolExpr { lhs, rhs, op })) => {
+            compile_operand(path, lhs, out, blocks)?;
+            compile_operand(path, rhs, out, blocks)?;
+            out.push(Instr::Op(*op));
+        }
+        Ast::Stmt(_lc, Stmt::BoolNegate(inner)) => {
+            compile_operand(path, inner, out, blocks)?;
+            out.push(Instr::Negate);
+        },
         Ast::Stmt(_lc, Stmt::Where(_)) => todo!(),
         Ast::Stmt(_lc, Stmt::Command(command)) => {
             if let Some(command_str) = command.argv.get(0) {
-                match command_str.as_str() {
-                    "cd" => out.push(Instr::ChangeDir { argv: command.argv[1..].to_vec() }),
+                match command_str {
+                    Token::Word(s) if s == "cd" => {
+                        out.push(Instr::ChangeDir { argv: command.argv[1..].to_vec() });
+                    }
                     _ => {
                         let c = command_str.to_string();
                         let path = resolve(path, &c)
@@ -127,7 +174,7 @@ fn compile_ast(
                                 if let Some(func) = func {
                                     let mut b = Block { contents: Vec::new() };
                                     compile_ast(path, func, &mut b.contents, blocks)?;
-                                    b.contents.push(Instr::DoneProgram);
+                                    b.contents.push(Instr::Return);
                                     blocks.push(b);
                                     Ok(RunPipelineItem::Where { block: blocks.len() - 1 })
                                 } else {
@@ -150,7 +197,7 @@ fn compile_ast(
 
             let mut b = Block { contents: Vec::new() };
             compile_ast(path, ast, &mut b.contents, blocks)?;
-            b.contents.push(Instr::DoneProgram);
+            b.contents.push(Instr::Return);
             blocks.push(b);
         },
         _ => todo!(),
@@ -219,7 +266,10 @@ pub enum VMStatus {
 #[derive(Clone)]
 pub enum VMMessage {
     ChangedDir,
-    Done(Option<ExitReason>),
+    Done {
+        last_exit_reason: Option<ExitReason>,
+        stack: Vec<Value<'static>>,
+    },
     Waiting(WaitingOn2),
     Job(Job),
 }
@@ -236,11 +286,20 @@ pub enum WaitingOn2 {
     Builtin(tokio::task::AbortHandle),
 }
 
+#[derive(Default)]
+pub struct Scope {
+    vars: HashMap<String, bwine::Value<'static>>,
+}
+
 pub struct VM {
-    pub fd3_slave: Option<OwnedFd>,
-    pub slave: Option<OwnedFd>,
+    pub fd3_slave: Option<Arc<OwnedFd>>,
+    pub slave: Option<Arc<OwnedFd>>,
     pub program: Arc<Vec<Block>>,
     pub pc: (usize, Option<usize>),
+
+    pub stack: Vec<Value<'static>>,
+    pub scope: Vec<Scope>,
+    pub rstack: Vec<(usize, Option<usize>)>,
 
     pub env: Arc<HashMap<OsString, OsString>>,
     pub waiting_on: Option<WaitingOn>,
@@ -324,7 +383,7 @@ impl VM {
 
         match &self.program[self.pc.0].contents[instr_pc] {
             Instr::ChangeDir { argv } => {
-                let argv = prepare_args(&argv).collect::<Vec<_>>();
+                let argv = prepare_args(self, &argv).collect::<Vec<_>>();
 
                 if argv.len() != 1 {
                     outln!("Usage: cd <dir>");
@@ -340,7 +399,7 @@ impl VM {
                 }
             }
             Instr::Run { command } => {
-                let (cmd, args) = prepare_invocation(&command);
+                let (cmd, args) = prepare_invocation(self, &command);
                 let mut pcmd = std::process::Command::new(&cmd);
                 pcmd.envs(&*self.env);
                 pcmd.args(args);
@@ -408,23 +467,38 @@ impl VM {
                         RunPipelineItem::Where { block } => {
                             let writer = writer_obj.take()
                                 .map(|w| Box::new(w) as Box<dyn std::io::Write + Send>)
-                                .or_else(|| self.fd3_slave.as_ref().map(|fd3| Box::new(UnownedFd::new(fd3.as_fd())) as _))
+                                .or_else(|| self.fd3_slave.as_ref().map(|fd3| Box::new(FdRw(fd3.clone())) as _))
                                 .unwrap();
                             let reader = reader_obj.take()
                                 .map(|r| Box::new(r) as Box<dyn std::io::Read + Send>)
-                                .or_else(|| self.fd3_slave.as_ref().map(|fd3| Box::new(UnownedFd::new(fd3.as_fd())) as _))
+                                .or_else(|| self.fd3_slave.as_ref().map(|fd3| Box::new(FdRw(fd3.clone())) as _))
                                 .unwrap();
                             let program = self.program.clone();
                             let block = *block;
+                            let mut vm = VM {
+                                fd3_slave: self.fd3_slave.clone(),
+                                slave: self.slave.clone(),
+                                env: self.env.clone(),
+                                program,
+                                stack: Vec::new(),
+                                scope: Vec::new(),
+                                rstack: Vec::new(),
+                                pc: (0, None),
+                                waiting_on: None,
+                                child_exit_stack: Vec::new(),
+                                status: None,
+                                msg_tx: None,
+                                done: false,
+                            };
                             let jh = tokio::spawn(async move {
-                                builtin::filter(program, block, reader, writer).await.unwrap();
+                                builtin::filter(&mut vm, block, reader, writer).await.unwrap();
                             });
                             let ah = jh.abort_handle();
                             let shjh = async move { jh.await.unwrap(); }.boxed().shared();
                             last_one = Some((WaitingOn::Builtin(shjh), WaitingOn2::Builtin(ah)));
                         },
                         RunPipelineItem::Command(command) => {
-                            let (cmd, args) = prepare_invocation(&command);
+                            let (cmd, args) = prepare_invocation(self, &command);
                             let mut command = std::process::Command::new(cmd);
                             command.envs(&*self.env);
                             command.args(args);
@@ -490,6 +564,9 @@ impl VM {
                         slave: None,
                         env,
                         program,
+                        stack: Vec::new(),
+                        scope: Vec::new(),
+                        rstack: Vec::new(),
                         pc: (block, None),
                         waiting_on: None,
                         child_exit_stack: Vec::new(),
@@ -504,22 +581,139 @@ impl VM {
                     sender.send(VMMessage::Job(Job { status: rx, })).await.unwrap();
                 }
             },
-            Instr::DoneProgram => {
-                self.done = true;
-                if let Some(sender) = &self.msg_tx {
-                    sender.send(VMMessage::Done(self.child_exit_stack.pop())).await.unwrap();
+            Instr::Call { block } => {
+                self.rstack.push(self.pc);
+                self.scope.push(Scope::default());
+                self.pc = (*block, None);
+            },
+            Instr::Load(tok) => {
+                match tok {
+                    Token::Word(s) => for item in expand_token(&s) {
+                        self.stack.push(Value::from(item));
+                    },
+                    Token::String(v) => self.stack.push(Value::from(v.clone())),
+                    Token::Int(v) => self.stack.push(Value::Int(*v)),
+                    Token::Float(v) => self.stack.push(Value::Float(*v)),
+                    Token::Var(s) => self.stack.push(self.get_var(s).unwrap()),
                 }
-                if let Some(sender) = &self.status {
-                    sender.send_modify(move |previous| {
-                        match std::mem::take(previous) {
-                            VMStatus::Done { command, reason } => *previous = VMStatus::Resolved { command: Some(command), reason: Some(reason) },
-                            VMStatus::None => *previous = VMStatus::Resolved { command: None, reason: None },
-                            _ => unreachable!(),
+            },
+            Instr::Op(op) => {
+                fn cmp<T: PartialOrd>(a: T, b: T, op: Operator) -> bool {
+                    match op {
+                        Operator::Gt => a > b,
+                        Operator::Lt => a < b,
+                        Operator::Le => a <= b,
+                        Operator::Ge => a >= b,
+                        _ => unreachable!(),
+                    }
+                }
+
+                let b = self.stack.pop().unwrap();
+                let a = self.stack.pop().unwrap();
+
+                let op = *op;
+                let result = match op {
+                    Operator::Eq => Value::Bool(a == b),
+                    Operator::Ne => Value::Bool(a != b),
+                    Operator::Gt | Operator::Lt | Operator::Le | Operator::Ge
+                        => Value::Bool(
+                            match (&a, &b) {
+                                (Value::Int(a), Value::Int(b)) => cmp(*a, *b, op),
+                                (Value::Float(a), Value::Float(b)) => cmp(*a, *b, op),
+                                (Value::Int(a), Value::Float(b)) => cmp(*a as f64, *b, op),
+                                (Value::Float(a), Value::Int(b)) => cmp(*a, *b as f64, op),
+                                (Value::Text(a), Value::Text(b)) => cmp(a, b, op),
+                                _ => panic!("invalid operands: {:?} and {:?}", a, b),
+                            }
+                        ),
+                    Operator::And | Operator::Or | Operator::Xor
+                        => match (a, b) {
+                            (Value::Int(_), Value::Int(_)) => todo!(), // binary operators?
+                            (Value::Bool(a), Value::Bool(b)) => Value::Bool(match op {
+                                Operator::And => a && b,
+                                Operator::Or => a || b,
+                                Operator::Xor => a ^ b,
+                                _ => unreachable!(),
+                            }),
+                            _ => panic!("invalid operands"),
                         }
-                    });
+                    Operator::Like => todo!(),
+                    Operator::NotLike => todo!(),
+                };
+
+                self.stack.push(result);
+            }
+            Instr::Negate => {
+                todo!()
+            }
+            Instr::Pop => {
+                _ = self.stack.pop();
+            }
+            Instr::Return => {
+                if let Some(newpc) = self.rstack.pop() {
+                    self.pc = newpc;
+                    self.scope.pop().unwrap();
+                } else {
+                    self.done = true;
+                    if let Some(sender) = &self.msg_tx {
+                        sender.send(VMMessage::Done {
+                            stack: std::mem::take(&mut self.stack),
+                            last_exit_reason: self.child_exit_stack.pop(),
+                        }).await.unwrap();
+                    }
+                    if let Some(sender) = &self.status {
+                        sender.send_modify(move |previous| {
+                            match std::mem::take(previous) {
+                                VMStatus::Done { command, reason } => *previous = VMStatus::Resolved { command: Some(command), reason: Some(reason) },
+                                VMStatus::None => *previous = VMStatus::Resolved { command: None, reason: None },
+                                _ => unreachable!(),
+                            }
+                        });
+                    }
                 }
             },
         }
+    }
+
+    pub fn get_var(&self, s: &Var) -> Option<bwine::Value<'static>> {
+        for scope in self.scope.iter().rev() {
+            if let Some(value) = scope.vars.get(&s.name) {
+                let mut value: Cow<'_, Value<'static>> = Cow::Borrowed(value);
+                for field in s.fields.iter().rev() {
+                    match &*value {
+                        Value::Text(_) => todo!(),
+                        Value::Path(_) => todo!(),
+                        Value::Bytes(_) => todo!(),
+                        Value::Array(_) => todo!(),
+                        // Value::Array(arr) => {
+                        //     match field {
+                        //         Value::Int(i) => value = &arr[i],
+                        //         Value::Float(f) => {
+                        //             let i = f as usize;
+                        //             assert!(i as f64 == f);
+                        //             value = &arr[i];
+                        //         },
+                        //     }
+                        // },
+                        Value::Map(_) => todo!(),
+                        Value::Table { header, rows } => {
+                            let Field::Column(wanted_column) = field;
+                            let i = header.iter().position(|col| col == wanted_column).unwrap();
+                            if rows.len() == 1 {
+                                value = Cow::Owned(rows[0][i].clone());
+                            } else {
+                                value = Cow::Owned(Value::Array(
+                                    rows.iter().map(|row| row[i].clone()).collect(),
+                                ));
+                            }
+                        },
+                        _ => panic!("can't index this"),
+                    }
+                }
+                return Some(value.into_owned());
+            }
+        }
+        None
     }
 }
 
@@ -544,7 +738,12 @@ pub fn print_program(p: &[Block]) {
                         }
                     },
                 Instr::CallAsync { block } => println!("  - call_async {block}"),
-                Instr::DoneProgram => println!("  - done"),
+                Instr::Call { block } => println!("  - call {block}"),
+                Instr::Load(tok) => println!("  - push {}", tok.to_string()),
+                Instr::Op(op) => println!("  - op {op:?}"),
+                Instr::Negate => println!("  - negate"),
+                Instr::Pop => println!("  - pop"),
+                Instr::Return => println!("  - return"),
             }
         }
     }
@@ -593,19 +792,22 @@ fn add_terminal_controller(cmd: &mut std::process::Command, slave: BorrowedFd) {
     }
 }
 
-fn prepare_args(argv: &[Token]) -> impl Iterator<Item = String> {
+fn prepare_args(vm: &VM, argv: &[Token]) -> impl Iterator<Item = String> {
     argv.iter()
         .map(|tok| {
             match tok {
+                Token::Int(int) => vec![int.to_string()],
+                Token::Float(float) => vec![float.to_string()],
                 Token::Word(s) => expand_token(&s),
-                _ => vec![tok.to_string()],
+                Token::Var(s) => vec![vm.get_var(s).unwrap().to_string()],
+                Token::String(s) => vec![s.clone()],
             }
         })
         .flatten()
 }
 
-fn prepare_invocation(c: &Command2) -> (&Path, impl Iterator<Item = String>) {
-    (&c.path, prepare_args(&c.args))
+fn prepare_invocation<'a>(vm: &VM, c: &'a Command2) -> (&'a Path, impl Iterator<Item = String>) {
+    (&c.path, prepare_args(vm, &c.args))
 }
 
 fn expand_token(token: &str) -> Vec<String> {
@@ -649,23 +851,18 @@ mod builtin {
     use bwine::{self, Value, Token};
 
     pub async fn filter(
-        program: Arc<Vec<Block>>,
+        vm: &mut VM,
         block: usize,
         mut reader: Box<dyn std::io::Read + Send>,
         writer: Box<dyn std::io::Write + Send>
     ) -> Result<()> {
-        _ = program;
-        _ = block;
-
-        let mut r = 0;
-
         let mut sr = bwine::StreamingReader::new();
         let mut buf = Vec::<u8>::new();
         let mut ast = Vec::new();
         let mut consumed = 0;
 
         #[derive(Debug)]
-        enum S { V, H, PT, PA }
+        enum S { V, H, PT(Vec<Value<'static>>), PA }
         let mut s = S::V;
         let mut ai = 0;
 
@@ -693,7 +890,7 @@ mod builtin {
                 }
 
                 if ai < ast.len() {
-                    match s {
+                    match &s {
                         S::V => {
                             match &ast[ai] {
                                 Token::Table => s = S::H,
@@ -710,18 +907,28 @@ mod builtin {
                                 && let Some((ns, Value::Array(harr))) = Token::collect(&ast[ai..])
                             {
                                 ai += ns + 1; // Skip next Token::Array that begins rows.
-                                s = S::PT;
+                                s = S::PT(harr.clone());
                                 stt.headers(harr).unwrap();
                             }
                         }
-                        S::PT => {
+                        S::PT(headers) => {
                             if let Token::Array(_) = &ast[ai]
                                 && let Some((ns, Value::Array(row))) = Token::collect(&ast[ai..])
                             {
-                                r += 1;
-                                if let Value::Int(s) = row[3] && s > 100 {
+                                vm.done = false;
+                                vm.stack.clear();
+                                vm.pc = (block, None);
+                                vm.scope.push(Scope {
+                                    vars: [("_".to_owned(), Value::Table {
+                                        header: headers.clone(),
+                                        rows: vec![row.clone()]
+                                    })].into_iter().collect(),
+                                });
+                                vm.execute().await;
+                                if Some(Value::Bool(true)) == vm.stack.pop() {
                                     stt.row(row).unwrap();
                                 }
+
                                 ai += ns;
                             }
                         },

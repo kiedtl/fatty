@@ -1,6 +1,10 @@
 use std::fmt;
+use std::sync::Arc;
+use std::io::{self, Read, Write};
+use std::os::fd::OwnedFd;
 use std::hash::Hash;
 
+use rustix::io::Errno;
 use rustix::process::Signal;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
@@ -179,25 +183,13 @@ pub fn measure_text(
     (p.min_width(), p.min_height())
 }
 
-use std::io::{self, Read, Write};
-use std::os::fd::BorrowedFd;
-
-use rustix::io::Errno;
-
 // Wrapper for BorrowedFd<'_> that implements Read + Write with rustix
-pub struct UnownedFd(pub BorrowedFd<'static>);
+pub struct FdRw(pub Arc<OwnedFd>);
 
-impl UnownedFd {
-    pub fn new(f: BorrowedFd<'_>) -> Self {
-        use rustix::fd::AsRawFd;
-        Self(unsafe { BorrowedFd::borrow_raw(f.as_raw_fd()) })
-    }
-}
-
-impl Read for UnownedFd {
+impl Read for FdRw {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
-            match rustix::io::read(self.0, &mut *buf) {
+            match rustix::io::read(&self.0, &mut *buf) {
                 Ok(n) => return Ok(n),
                 Err(Errno::INTR) => continue,
                 Err(e) => return Err(e.into()),
@@ -206,10 +198,10 @@ impl Read for UnownedFd {
     }
 }
 
-impl Write for UnownedFd {
+impl Write for FdRw {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         loop {
-            match rustix::io::write(self.0, buf) {
+            match rustix::io::write(&self.0, buf) {
                 Ok(n) => return Ok(n),
                 Err(Errno::INTR) => continue,
                 Err(e) => return Err(e.into()),

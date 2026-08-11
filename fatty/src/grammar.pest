@@ -1,9 +1,9 @@
 WHITESPACE    = _{ " " | "\t" }
 
 program       =  { SOI ~ stmt+ ~ EOI }
-stmt          =  { background | chain | pipeline | sub | command }
+stmt          =  { background | chain | pipeline | b_expr | sub | command }
 background    =  { (chain | pipeline | sub | command) ~ "&" }
-chain         =  { (pipeline | sub | command) ~ (connector ~ (pipeline | sub | command))+ }
+chain         =  { (pipeline | b_expr | sub | command) ~ (connector ~ (pipeline | b_expr | sub | command))+ }
 pipeline      =  { (sub | special | command | special) ~ ("|" ~ (sub | special | command | special))+ }
 sub           =  { "(" ~ stmt+ ~ ")" }
 command       =  { token+ }
@@ -11,13 +11,33 @@ command       =  { token+ }
 connector     =  { "&&" | "||" }
 
 special       = _{ s_where }
-s_where       =  { "where" ~ sub? }
-//until       =  { "until" ~ sub }
+s_where       =  { "where" ~ stmt+ }
+//until       =  { "until" ~ stmt+ }
 //break       =  { "break" }
 //continue    =  { "continue" }
 
-token         = _{ single_quoted | double_quoted | unquoted } // | var }
-// var           =  { "$" ~ ('a'..'z' | 'A'..'Z' | '0'..'9' | '_')+ }
+b_expr        = {
+      prefix+ ~ atom ~ (infix ~ prefix* ~ atom)*
+    | b_cmp ~ (infix ~ prefix* ~ atom)*
+    | atom ~ (infix ~ prefix* ~ atom)+
+}
+atom          = _{ b_cmp | sub | token }
+b_cmp         =  { b_operand ~ b_cmp_op ~ b_operand }
+b_operand     = _{ sub | token }
+
+infix         = _{ b_and_op | b_xor_op | b_or_op }
+prefix        = _{ b_not_op }
+
+b_and_op      =  { "-and" ~ !(ASCII_ALPHANUMERIC | "_") }
+b_xor_op      =  { "-xor" ~ !(ASCII_ALPHANUMERIC | "_") }
+b_or_op       =  { "-or"  ~ !(ASCII_ALPHANUMERIC | "_") }
+b_not_op      =  { "-not" ~ !(ASCII_ALPHANUMERIC | "_") }
+b_cmp_op      = @{ ("-eq"|"-ne"|"-ge"|"-gt"|"-le"|"-lt"|"-lk"|"-nk") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+token         = _{ single_quoted | double_quoted | unquoted | var }
+var           =  { "$" ~ var_name ~ ("." ~ field)* }
+var_name      = @{ (ASCII_ALPHANUMERIC | "_")+ }
+field         = @{ (ASCII_ALPHANUMERIC | "_")+ }
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 double_quoted = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
 unquoted      = @{
