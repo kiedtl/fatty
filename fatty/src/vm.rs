@@ -60,6 +60,9 @@ pub enum Instr {
     CallAsync { block: usize },
     Call { block: usize },
     Load(Token),
+    LoadVar(String),
+    GetColumn,
+    GetIndex,
     Op(Operator),
     Negate,
     Pop,
@@ -90,18 +93,42 @@ pub fn compile(path: &[PathBuf], ast: &[Ast]) -> Result<Vec<Block>, CompileError
     Ok(blocks)
 }
 
-fn compile_operand(
+fn compile_token(
     path: &[PathBuf],
-    operand: &Operand,
+    tok: &Token,
+    out: &mut Vec<Instr>,
+    blocks: &mut Vec<Block>,
+) -> Result<(), CompileError> {
+    match tok {
+        Token::Var(v) => {
+            out.push(Instr::LoadVar(v.name.clone()));
+            for field in &v.fields {
+                match field {
+                    Field::Column(operand) => {
+                        compile_single(path, operand, out, blocks)?;
+                        out.push(Instr::GetColumn);
+                    }
+                    Field::Index(operand) => {
+                        compile_single(path, operand, out, blocks)?;
+                        out.push(Instr::GetIndex);
+                    }
+                }
+            }
+        }
+        _ => out.push(Instr::Load(tok.clone())),
+    }
+    Ok(())
+}
+
+fn compile_single(
+    path: &[PathBuf],
+    operand: &Single,
     out: &mut Vec<Instr>,
     blocks: &mut Vec<Block>
-) -> Result<(), CompileError>
-{
+) -> Result<(), CompileError> {
     match operand {
-        Operand::Token(tok) => {
-            out.push(Instr::Load(tok.clone()));
-        },
-        Operand::Sub(body) => {
+        Single::Token(tok) => compile_token(path, &tok, out, blocks)?,
+        Single::Sub(body) => {
             let mut b = Block { contents: Vec::new() };
             compile_ast(path, body, &mut b.contents, blocks)?;
             b.contents.push(Instr::Return);
@@ -117,8 +144,7 @@ fn compile_ast(
     ast: &Ast,
     out: &mut Vec<Instr>,
     blocks: &mut Vec<Block>
-) -> Result<(), CompileError>
-{
+) -> Result<(), CompileError> {
     match ast {
         Ast::Stmt(_lc, Stmt::Sub(body)) => {
             let mut b = Block { contents: Vec::new() };
@@ -128,12 +154,12 @@ fn compile_ast(
             out.push(Instr::Call { block: blocks.len() - 1 });
         }
         Ast::Stmt(_lc, Stmt::BoolExpr(BoolExpr { lhs, rhs, op })) => {
-            compile_operand(path, lhs, out, blocks)?;
-            compile_operand(path, rhs, out, blocks)?;
+            compile_single(path, lhs, out, blocks)?;
+            compile_single(path, rhs, out, blocks)?;
             out.push(Instr::Op(*op));
         }
         Ast::Stmt(_lc, Stmt::BoolNegate(inner)) => {
-            compile_operand(path, inner, out, blocks)?;
+            compile_single(path, inner, out, blocks)?;
             out.push(Instr::Negate);
         },
         Ast::Stmt(_lc, Stmt::Where(_)) => todo!(),
@@ -586,6 +612,46 @@ impl VM {
                 self.scope.push(Scope::default());
                 self.pc = (*block, None);
             },
+            Instr::GetColumn => {
+                let key = self.stack.pop().unwrap();
+                let value = self.stack.pop().unwrap();
+                let result = match value {
+                    Value::Table { header, rows } => {
+                        let Some(i) = header.iter().position(|c| *c == key) else {
+                            panic!("No such column {key:?} on table({header:?}).");
+                        };
+                        if rows.len() == 1 {
+                            rows.into_iter().next().unwrap().into_iter().nth(i).unwrap()
+                        } else {
+                            Value::Array(rows.into_iter().map(|mut r| r.remove(i)).collect())
+                        }
+                    }
+                    _ => panic!("invalid target for column index: {value:?}"),
+                };
+                self.stack.push(result);
+            }
+            Instr::GetIndex => {
+                let key = self.stack.pop().unwrap();
+                let value = self.stack.pop().unwrap();
+                let i = match key {
+                    Value::Int(i) => i as usize,
+                    Value::Float(f) => {
+                        let i = f as usize;
+                        assert!(f as f64 == f);
+                        i
+                    }
+                    _ => panic!("index must be an integer"),
+                };
+                let result = match value {
+                    Value::Array(arr) => arr.into_iter().nth(i).expect("out of bounds"),
+                    Value::Table { rows, .. } => Value::Array(rows.into_iter().nth(i).expect("out of bounds")),
+                    _ => panic!("invalid target for row index: {value:?}"),
+                };
+                self.stack.push(result);
+            }
+            Instr::LoadVar(name) => {
+                self.stack.push(self.get_var(&name).unwrap().clone());
+            }
             Instr::Load(tok) => {
                 match tok {
                     Token::Word(s) => for item in expand_token(&s) {
@@ -594,7 +660,7 @@ impl VM {
                     Token::String(v) => self.stack.push(Value::from(v.clone())),
                     Token::Int(v) => self.stack.push(Value::Int(*v)),
                     Token::Float(v) => self.stack.push(Value::Float(*v)),
-                    Token::Var(s) => self.stack.push(self.get_var(s).unwrap()),
+                    Token::Var(s) => self.stack.push(self.get_var(&s.name).unwrap().clone()),
                 }
             },
             Instr::Op(op) => {
@@ -604,6 +670,16 @@ impl VM {
                         Operator::Lt => a < b,
                         Operator::Le => a <= b,
                         Operator::Ge => a >= b,
+                        _ => unreachable!(),
+                    }
+                }
+
+                fn math<T: num_traits::Num>(a: T, b: T, op: Operator) -> T {
+                    match op {
+                        Operator::Add => a + b,
+                        Operator::Sub => a - b,
+                        Operator::Mul => a * b,
+                        Operator::Div => a / b,
                         _ => unreachable!(),
                     }
                 }
@@ -637,6 +713,18 @@ impl VM {
                             }),
                             _ => panic!("invalid operands"),
                         }
+                    Operator::Add | Operator::Sub | Operator::Mul | Operator::Div
+                        => match (&a, &b) {
+                            (Value::Text(a), Value::Text(b)) if op == Operator::Add => {
+                                let r = format!("{}{}", a.to_string(), b.to_string());
+                                Value::from(r)
+                            },
+                            (Value::Int(a), Value::Int(b)) => Value::Int(math(*a, *b, op)),
+                            (Value::Float(a), Value::Float(b)) => Value::Float(math(*a, *b, op)),
+                            (Value::Int(a), Value::Float(b)) => Value::Float(math(*a as f64, *b, op)),
+                            (Value::Float(a), Value::Int(b)) => Value::Float(math(*a, *b as f64, op)),
+                            _ => panic!("invalid operands: {:?} and {:?}", a, b),
+                        },
                     Operator::Like => todo!(),
                     Operator::NotLike => todo!(),
                 };
@@ -675,42 +763,10 @@ impl VM {
         }
     }
 
-    pub fn get_var(&self, s: &Var) -> Option<bwine::Value<'static>> {
+    pub fn get_var(&self, s: &str) -> Option<&bwine::Value<'static>> {
         for scope in self.scope.iter().rev() {
-            if let Some(value) = scope.vars.get(&s.name) {
-                let mut value: Cow<'_, Value<'static>> = Cow::Borrowed(value);
-                for field in s.fields.iter().rev() {
-                    match &*value {
-                        Value::Text(_) => todo!(),
-                        Value::Path(_) => todo!(),
-                        Value::Bytes(_) => todo!(),
-                        Value::Array(_) => todo!(),
-                        // Value::Array(arr) => {
-                        //     match field {
-                        //         Value::Int(i) => value = &arr[i],
-                        //         Value::Float(f) => {
-                        //             let i = f as usize;
-                        //             assert!(i as f64 == f);
-                        //             value = &arr[i];
-                        //         },
-                        //     }
-                        // },
-                        Value::Map(_) => todo!(),
-                        Value::Table { header, rows } => {
-                            let Field::Column(wanted_column) = field;
-                            let i = header.iter().position(|col| col == wanted_column).unwrap();
-                            if rows.len() == 1 {
-                                value = Cow::Owned(rows[0][i].clone());
-                            } else {
-                                value = Cow::Owned(Value::Array(
-                                    rows.iter().map(|row| row[i].clone()).collect(),
-                                ));
-                            }
-                        },
-                        _ => panic!("can't index this"),
-                    }
-                }
-                return Some(value.into_owned());
+            if let Some(value) = scope.vars.get(s) {
+                return Some(value);
             }
         }
         None
@@ -740,6 +796,9 @@ pub fn print_program(p: &[Block]) {
                 Instr::CallAsync { block } => println!("  - call_async {block}"),
                 Instr::Call { block } => println!("  - call {block}"),
                 Instr::Load(tok) => println!("  - push {}", tok.to_string()),
+                Instr::LoadVar(s) => println!("  - load {s}"),
+                Instr::GetColumn => println!("  - index_column"),
+                Instr::GetIndex => println!("  - index_row"),
                 Instr::Op(op) => println!("  - op {op:?}"),
                 Instr::Negate => println!("  - negate"),
                 Instr::Pop => println!("  - pop"),
@@ -799,7 +858,7 @@ fn prepare_args(vm: &VM, argv: &[Token]) -> impl Iterator<Item = String> {
                 Token::Int(int) => vec![int.to_string()],
                 Token::Float(float) => vec![float.to_string()],
                 Token::Word(s) => expand_token(&s),
-                Token::Var(s) => vec![vm.get_var(s).unwrap().to_string()],
+                Token::Var(_) => todo!(),
                 Token::String(s) => vec![s.clone()],
             }
         })

@@ -21,6 +21,20 @@ x read from pty master properly
   x arrow keys to go back/forwards
   - time began, ended, taken
   - directory
+
+Shell
+- builtin: select
+  x basic
+  - Exclusion mode flag -e
+- builtin: where filter
+  x basic
+  - datetime comparisons, i.e. $date -gt @ts(2026-03-01)
+- builtin(?): sort-by
+  - ascending/descending
+x index array/table with arbitrary expressions
+- variable assignments
+- assertions
+- tests
 - environment variables
   - $env variables
   - set for command
@@ -46,7 +60,7 @@ Crickhollow (re)implementations
     - images
 - object output
   x df
-  - ps
+  x ps
   - ls
   x du
   - wc
@@ -56,6 +70,10 @@ Crickhollow (re)implementations
   - rg (wrapper)
   - tar (lmao)
     - See: doc/fatty-todo.txt
+
+Reimplementation & new utility priorities
+- 1 gpuinfo: lspci | grep -i vga
+- 1 cpuinfo: lscpu
 
 Project: completions
 

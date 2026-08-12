@@ -16,18 +16,19 @@ pub enum Operator {
     And, Xor, Or,
     Eq, Ne, Lt, Gt, Le, Ge,
     Like, NotLike,
+    Add, Sub, Mul, Div,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Operand {
+pub enum Single {
     Token(Token),
     Sub(Box<Ast>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoolExpr {
-    pub lhs: Operand,
-    pub rhs: Operand,
+    pub lhs: Single,
+    pub rhs: Single,
     pub op: Operator,
 }
 
@@ -42,10 +43,8 @@ pub struct Var {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Field {
-    Column(bwine::Value<'static>),
-    // ColumnExpr(Box<Ast>),
-    // Index(usize),
-    // IndexExpr(Box<Ast>),
+    Column(Single),
+    Index(Single),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,7 +122,7 @@ pub enum Stmt {
     Command(Command),
     Where(Option<Box<Ast>>),
     BoolExpr(BoolExpr),
-    BoolNegate(Operand),
+    BoolNegate(Single),
     // Query(Query),
 }
 
@@ -180,9 +179,21 @@ fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
                         assert!(name.is_none());
                         name = Some(item.as_str().to_owned());
                     },
-                    Rule::field => {
-                        let v = bwine::Value::from(item.as_str().to_owned());
-                        fields.push(Field::Column(v));
+                    Rule::field_col => {
+                        let value = item.as_str()[1..].to_owned();
+                        fields.push(Field::Column(Single::Token(Token::String(value))));
+                    },
+                    Rule::field_col_br => {
+                        let sub = Box::new(parse_ast(item.into_inner().next().unwrap())?);
+                        fields.push(Field::Column(Single::Sub(sub)));
+                    },
+                    Rule::field_index_l => {
+                        let value = item.as_str().to_owned();
+                        fields.push(Field::Index(Single::Token(Token::String(value))));
+                    },
+                    Rule::field_index => {
+                        let sub = Box::new(parse_ast(item.into_inner().next().unwrap())?);
+                        fields.push(Field::Column(Single::Sub(sub)));
                     },
                     _ => unreachable!(),
                 }
@@ -190,19 +201,12 @@ fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
             let name = name.unwrap();
             Token::Var(Var { name, fields })
         },
-        Rule::single_quoted => Token::String(pair.as_str().to_owned()),
-        Rule::double_quoted => Token::String(unescape_dq(pair.as_str())),
-        Rule::unquoted => {
-            let s = pair.as_str();
-            if let Ok(int) = s.parse::<i128>() {
-                Token::Int(int)
-            } else if let Ok(float) = s.parse::<f64>() {
-                Token::Float(float)
-            } else {
-                Token::Word(unescape_unquoted(s))
-            }
-        },
-        _ => unreachable!(),
+        Rule::single_quoted => Token::String(pair.as_str()[1..].strip_suffix('\'').unwrap().to_owned()),
+        Rule::double_quoted => Token::String(unescape_dq(pair.as_str()[1..].strip_suffix('"').unwrap())),
+        Rule::num_lit => Token::Int(pair.as_str().parse::<i128>().unwrap()),
+        Rule::float_lit => Token::Float(pair.as_str().parse::<f64>().unwrap()),
+        Rule::unquoted => Token::Word(unescape_unquoted(pair.as_str())),
+        s => panic!("todo: {:?}", s),
     })
 }
 
@@ -239,9 +243,12 @@ fn span_lc(pair: &Pair<Rule>) -> LineCol {
     LineCol(l, s.start(), s.end())
 }
 
-fn b_cmp_op_of(s: &str) -> Operator {
+fn str_to_op(s: &str) -> Operator {
     match s {
-        "-eq" => Operator::Eq,
+        "+" => Operator::Add,
+        "-" => Operator::Sub,
+        "/" => Operator::Div,
+        "*" => Operator::Mul,
         "-ne" => Operator::Ne,
         "-ge" => Operator::Ge,
         "-gt" => Operator::Gt,
@@ -253,31 +260,31 @@ fn b_cmp_op_of(s: &str) -> Operator {
     }
 }
 
-fn parse_bool_expr_operand<'a>(pair: Pair<'a, Rule>) -> Result<Operand, String> {
+fn parse_bool_expr_operand<'a>(pair: Pair<'a, Rule>) -> Result<Single, String> {
     Ok(match pair.as_rule() {
-        Rule::sub => Operand::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?)),
-        _ => Operand::Token(parse_token(pair)?),
+        Rule::sub => Single::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?)),
+        _ => Single::Token(parse_token(pair)?),
     })
 }
 
 fn parse_bool_expr<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Ast, String> {
-    PRATT.map_primary(|primary| -> Result<Operand, String> {
+    PRATT.map_primary(|primary| -> Result<Single, String> {
             match primary.as_rule() {
-                Rule::b_cmp => {
+                Rule::small_op => {
                     let lc = span_lc(&primary);
                     let mut inner = primary.into_inner();
                     let lhs = parse_bool_expr_operand(inner.next().unwrap())?;
-                    let op = b_cmp_op_of(inner.next().unwrap().as_str());
+                    let op = str_to_op(inner.next().unwrap().as_str());
                     let rhs = parse_bool_expr_operand(inner.next().unwrap())?;
-                    Ok(Operand::Sub(Box::new(Ast::Stmt(lc, Stmt::BoolExpr(BoolExpr { op, lhs, rhs })))))
+                    Ok(Single::Sub(Box::new(Ast::Stmt(lc, Stmt::BoolExpr(BoolExpr { op, lhs, rhs })))))
                 }
                 Rule::double_quoted | Rule::single_quoted | Rule::unquoted
-                    => Ok(Operand::Token(parse_token(primary)?)),
-                _ => Ok(Operand::Sub(Box::new(parse_ast(primary)?))),
+                    => Ok(Single::Token(parse_token(primary)?)),
+                _ => Ok(Single::Sub(Box::new(parse_ast(primary)?))),
             }
         })
         .map_prefix(|op, rhs| {
-            Ok(Operand::Sub(Box::new(Ast::Stmt(span_lc(&op), Stmt::BoolNegate(rhs?)))))
+            Ok(Single::Sub(Box::new(Ast::Stmt(span_lc(&op), Stmt::BoolNegate(rhs?)))))
         })
         .map_infix(|lhs, rule, rhs| {
             let (lhs, rhs) = (lhs?, rhs?);
@@ -287,11 +294,11 @@ fn parse_bool_expr<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<As
                 Rule::b_or_op  => Operator::Or,
                 r => unreachable!("unexpected infix {r:?}"),
             };
-            Ok(Operand::Sub(Box::new(Ast::Stmt(span_lc(&rule), Stmt::BoolExpr(BoolExpr { op, lhs, rhs })))))
+            Ok(Single::Sub(Box::new(Ast::Stmt(span_lc(&rule), Stmt::BoolExpr(BoolExpr { op, lhs, rhs })))))
         })
         .parse(pairs)
         .map(|ok| match ok {
-            Operand::Sub(s) => *s,
+            Single::Sub(s) => *s,
             _ => unreachable!()
         })
 }

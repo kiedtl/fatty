@@ -6,7 +6,7 @@ background    =  { (chain | pipeline | sub | command) ~ "&" }
 chain         =  { (pipeline | b_expr | sub | command) ~ (connector ~ (pipeline | b_expr | sub | command))+ }
 pipeline      =  { (sub | special | command | special) ~ ("|" ~ (sub | special | command | special))+ }
 sub           =  { "(" ~ stmt+ ~ ")" }
-command       =  { token+ }
+command       =  { unquoted ~ token* }
 
 connector     =  { "&&" | "||" }
 
@@ -18,12 +18,12 @@ s_where       =  { "where" ~ stmt+ }
 
 b_expr        = {
       prefix+ ~ atom ~ (infix ~ prefix* ~ atom)*
-    | b_cmp ~ (infix ~ prefix* ~ atom)*
+    | small_op ~ (infix ~ prefix* ~ atom)*
     | atom ~ (infix ~ prefix* ~ atom)+
 }
-atom          = _{ b_cmp | sub | token }
-b_cmp         =  { b_operand ~ b_cmp_op ~ b_operand }
-b_operand     = _{ sub | token }
+atom          = _{ small_op | sub | token }
+small_op      =  { single ~ ops ~ single }
+single        = _{ sub | token }
 
 infix         = _{ b_and_op | b_xor_op | b_or_op }
 prefix        = _{ b_not_op }
@@ -32,16 +32,25 @@ b_and_op      =  { "-and" ~ !(ASCII_ALPHANUMERIC | "_") }
 b_xor_op      =  { "-xor" ~ !(ASCII_ALPHANUMERIC | "_") }
 b_or_op       =  { "-or"  ~ !(ASCII_ALPHANUMERIC | "_") }
 b_not_op      =  { "-not" ~ !(ASCII_ALPHANUMERIC | "_") }
-b_cmp_op      = @{ ("-eq"|"-ne"|"-ge"|"-gt"|"-le"|"-lt"|"-lk"|"-nk") ~ !(ASCII_ALPHANUMERIC | "_") }
+ops           = @{ ("-eq"|"-ne"|"-ge"|"-gt"|"-le"|"-lt"|"-lk"|"-nk"|"-"|"+"|"*"|"/") ~ !(ASCII_ALPHANUMERIC | "_") }
 
-token         = _{ single_quoted | double_quoted | unquoted | var }
-var           =  { "$" ~ var_name ~ ("." ~ field)* }
+token         = _{ var | literal | unquoted }
+
+var           =  { "$" ~ var_name ~ var_suffix* }
 var_name      = @{ (ASCII_ALPHANUMERIC | "_")+ }
-field         = @{ (ASCII_ALPHANUMERIC | "_")+ }
+var_suffix    = _{ field_col | field_col_br | field_index_l | field_index }
+field_col     = @{ "." ~ (ASCII_ALPHANUMERIC | "_")+ }
+field_col_br  =  { ".[" ~ stmt ~ "]" }
+field_index_l =  { "[" ~ literal ~ "]" }
+field_index   =  { "[" ~ stmt ~ "]" }
+
+literal       = _{ float_lit | num_lit | single_quoted | double_quoted }
+float_lit     = @{ num_lit ~ "." ~ num_lit }
+num_lit       = @{ ('0'..'9')+ }
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 double_quoted = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
 unquoted      = @{
-    ( !("$" | " " | "\t" | "\n" | "'" | "\"" | "\\" | "|" | "&" | "(" | ")") ~ ANY
+    ( !("$" | " " | "\t" | "\n" | "'" | "\"" | "\\" | "|" | "&" | "(" | ")" | "[" | "]") ~ ANY
     | "\\" ~ ANY
     )+
 }

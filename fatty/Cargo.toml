@@ -27,3 +27,4 @@ unicode-segmentation = "1.13.2"
 vte = { version = "0.15.0", features = ["bitflags", "ansi"] }
 anyhow = "1.0.104"
 chrono = "0.4.45"
+num-traits = "0.2.19"

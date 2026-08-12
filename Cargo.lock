@@ -1130,6 +1130,7 @@ dependencies = [
  "inotify",
  "itertools",
  "libc",
+ "num-traits",
  "pest",
  "pest_derive",
  "raw-window-handle",

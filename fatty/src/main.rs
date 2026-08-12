@@ -427,6 +427,7 @@ impl App {
                     },
                     Err(err) => {
                         outln!("{err}");
+                        println!("{err}");
                     }
                 }
             },
