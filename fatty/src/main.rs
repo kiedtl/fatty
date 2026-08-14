@@ -116,7 +116,7 @@ pub struct Execution {
     waiting_on: Option<vm::WaitingOn2>,
     done: bool,
     rx: Option<Arc<TokioMutex<mpsc::Receiver<vm::VMMessage>>>>,
-    stack: Vec<bwine::Value<'static>>,
+    stack: Vec<vm::StackValue>,
     exit_reason: Option<ExitReason>,
     is_drained: bool,
     fd3_is_drained: bool,
@@ -265,6 +265,7 @@ struct App {
     input: String,
     input_compile_error: Option<LineCol>,
     execs: Vec<Execution>,
+    vars: HashMap<String, bwine::Value<'static>>,
     theme: styles::Theme,
     env: HashMap<OsString, OsString>,
     path: Vec<PathBuf>,
@@ -324,6 +325,7 @@ impl App {
                 listing: listing(),
                 listing_last_changed: None,
                 execs: Vec::new(),
+                vars: HashMap::new(),
                 master: Arc::new(pty.controller),
                 slave: pty.user,
                 theme: styles::Theme::gruvbox(),
@@ -412,7 +414,10 @@ impl App {
                             program: Arc::new(program),
                             pc: (0, None),
                             stack: Vec::new(),
-                            scope: Vec::new(),
+                            scope: vec![vm::Scope {
+                                is_inherited: false,
+                                vars: self.vars.clone(),
+                            }],
                             rstack: Vec::new(),
                             waiting_on: None,
                             child_exit_stack: Vec::new(),
@@ -449,7 +454,8 @@ impl App {
                         vm::VMMessage::Waiting(waiting_on) => {
                             exec.waiting_on = Some(waiting_on);
                         }
-                        vm::VMMessage::Done { last_exit_reason, stack } => {
+                        vm::VMMessage::Done { last_exit_reason, stack, vars } => {
+                            self.vars = vars;
                             exec.done = true;
                             exec.exit_reason = last_exit_reason;
                             exec.stack = stack;
@@ -829,9 +835,10 @@ impl App {
                                 .into()
                         },
                         Column::with_children(
-                            exec.stack.iter().map(|item|
-                                bwine_ui::to_iced(item, self.vsize.get())
-                            )
+                            exec.stack.iter().map(|item| {
+                                let vm::StackValue::Value(v) = item else { unreachable!() };
+                                bwine_ui::to_iced(v, self.vsize.get())
+                            })
                         ),
                         // text({
                         //     let mut s = format!("p_stack: {}; ", exec.p_stack);

@@ -38,11 +38,11 @@ pub struct LineCol(pub usize, pub usize, pub usize);
 #[derive(Debug, Clone, PartialEq)]
 pub struct Var {
     pub name: String,
-    pub fields: Vec<Field>,
+    pub fields: Vec<FieldExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Field {
+pub enum FieldExpr {
     Column(Single),
     Index(Single),
 }
@@ -114,7 +114,14 @@ pub enum PipelineItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Assignment {
+    pub lhs: Var,
+    pub rhs: Single,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
+    Assignment(Assignment),
     Chain(Chain),
     Pipeline(Pipeline),
     Sub(Box<Ast>),
@@ -181,19 +188,19 @@ fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
                     },
                     Rule::field_col => {
                         let value = item.as_str()[1..].to_owned();
-                        fields.push(Field::Column(Single::Token(Token::String(value))));
+                        fields.push(FieldExpr::Column(Single::Token(Token::String(value))));
                     },
                     Rule::field_col_br => {
                         let sub = Box::new(parse_ast(item.into_inner().next().unwrap())?);
-                        fields.push(Field::Column(Single::Sub(sub)));
+                        fields.push(FieldExpr::Column(Single::Sub(sub)));
                     },
                     Rule::field_index_l => {
                         let value = item.as_str().to_owned();
-                        fields.push(Field::Index(Single::Token(Token::String(value))));
+                        fields.push(FieldExpr::Index(Single::Token(Token::String(value))));
                     },
                     Rule::field_index => {
                         let sub = Box::new(parse_ast(item.into_inner().next().unwrap())?);
-                        fields.push(Field::Column(Single::Sub(sub)));
+                        fields.push(FieldExpr::Column(Single::Sub(sub)));
                     },
                     _ => unreachable!(),
                 }
@@ -249,6 +256,7 @@ fn str_to_op(s: &str) -> Operator {
         "-" => Operator::Sub,
         "/" => Operator::Div,
         "*" => Operator::Mul,
+        "-eq" => Operator::Eq,
         "-ne" => Operator::Ne,
         "-ge" => Operator::Ge,
         "-gt" => Operator::Gt,
@@ -260,7 +268,7 @@ fn str_to_op(s: &str) -> Operator {
     }
 }
 
-fn parse_bool_expr_operand<'a>(pair: Pair<'a, Rule>) -> Result<Single, String> {
+fn parse_single<'a>(pair: Pair<'a, Rule>) -> Result<Single, String> {
     Ok(match pair.as_rule() {
         Rule::sub => Single::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?)),
         _ => Single::Token(parse_token(pair)?),
@@ -273,9 +281,9 @@ fn parse_bool_expr<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<As
                 Rule::small_op => {
                     let lc = span_lc(&primary);
                     let mut inner = primary.into_inner();
-                    let lhs = parse_bool_expr_operand(inner.next().unwrap())?;
+                    let lhs = parse_single(inner.next().unwrap())?;
                     let op = str_to_op(inner.next().unwrap().as_str());
-                    let rhs = parse_bool_expr_operand(inner.next().unwrap())?;
+                    let rhs = parse_single(inner.next().unwrap())?;
                     Ok(Single::Sub(Box::new(Ast::Stmt(lc, Stmt::BoolExpr(BoolExpr { op, lhs, rhs })))))
                 }
                 Rule::double_quoted | Rule::single_quoted | Rule::unquoted
@@ -338,6 +346,12 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
             Ast::Stmt(lc, Stmt::Where(s))
         }
         Rule::command => Ast::Stmt(lc, Stmt::Command(parse_command(pair.into_inner())?)),
+        Rule::assignment => {
+            let mut inner = pair.into_inner();
+            let Token::Var(lhs) = parse_token(inner.next().unwrap())? else { unreachable!() };
+            let rhs = parse_single(inner.next().unwrap())?;
+            Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs }))
+        },
         Rule::b_expr => parse_bool_expr(pair.into_inner())?,
 
         Rule::single_quoted => unreachable!(),

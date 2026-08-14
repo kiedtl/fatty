@@ -60,9 +60,13 @@ pub enum Instr {
     CallAsync { block: usize },
     Call { block: usize },
     Load(Token),
-    LoadVar(String),
+
+    VarRef(String),
     GetColumn,
     GetIndex,
+    Deref,
+    SetVar,
+
     Op(Operator),
     Negate,
     Pop,
@@ -101,19 +105,20 @@ fn compile_token(
 ) -> Result<(), CompileError> {
     match tok {
         Token::Var(v) => {
-            out.push(Instr::LoadVar(v.name.clone()));
+            out.push(Instr::VarRef(v.name.clone()));
             for field in &v.fields {
                 match field {
-                    Field::Column(operand) => {
+                    FieldExpr::Column(operand) => {
                         compile_single(path, operand, out, blocks)?;
                         out.push(Instr::GetColumn);
                     }
-                    Field::Index(operand) => {
+                    FieldExpr::Index(operand) => {
                         compile_single(path, operand, out, blocks)?;
                         out.push(Instr::GetIndex);
                     }
                 }
             }
+            out.push(Instr::Deref);
         }
         _ => out.push(Instr::Load(tok.clone())),
     }
@@ -146,6 +151,23 @@ fn compile_ast(
     blocks: &mut Vec<Block>
 ) -> Result<(), CompileError> {
     match ast {
+        Ast::Stmt(_lc, Stmt::Assignment(Assignment { lhs, rhs })) => {
+            compile_single(path, rhs, out, blocks)?;
+            out.push(Instr::VarRef(lhs.name.clone()));
+            for field in &lhs.fields {
+                match field {
+                    FieldExpr::Column(operand) => {
+                        compile_single(path, &operand, out, blocks)?;
+                        out.push(Instr::GetColumn);
+                    }
+                    FieldExpr::Index(operand) => {
+                        compile_single(path, &operand, out, blocks)?;
+                        out.push(Instr::GetIndex);
+                    }
+                }
+            }
+            out.push(Instr::SetVar);
+        }
         Ast::Stmt(_lc, Stmt::Sub(body)) => {
             let mut b = Block { contents: Vec::new() };
             compile_ast(path, body, &mut b.contents, blocks)?;
@@ -294,7 +316,8 @@ pub enum VMMessage {
     ChangedDir,
     Done {
         last_exit_reason: Option<ExitReason>,
-        stack: Vec<Value<'static>>,
+        stack: Vec<StackValue>,
+        vars: HashMap<String, Value<'static>>,
     },
     Waiting(WaitingOn2),
     Job(Job),
@@ -312,9 +335,35 @@ pub enum WaitingOn2 {
     Builtin(tokio::task::AbortHandle),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Scope {
-    vars: HashMap<String, bwine::Value<'static>>,
+    pub vars: HashMap<String, Value<'static>>,
+    pub is_inherited: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct VarRef {
+    name: String,
+    fields: Vec<Field>,
+}
+
+impl VarRef {
+    pub fn new(name: &str) -> Self {
+        let name = name.to_owned();
+        Self { name, fields: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Field {
+    Column(Value<'static>),
+    Index(Value<'static>),
+}
+
+#[derive(Debug, Clone)]
+pub enum StackValue {
+    Value(Value<'static>),
+    VarRef(VarRef),
 }
 
 pub struct VM {
@@ -323,7 +372,7 @@ pub struct VM {
     pub program: Arc<Vec<Block>>,
     pub pc: (usize, Option<usize>),
 
-    pub stack: Vec<Value<'static>>,
+    pub stack: Vec<StackValue>,
     pub scope: Vec<Scope>,
     pub rstack: Vec<(usize, Option<usize>)>,
 
@@ -340,8 +389,21 @@ pub struct VM {
     pub done: bool,
 }
 
+macro_rules! pop_value {
+    ($s:expr) => {
+        match $s.stack.pop().unwrap() {
+            StackValue::Value(value) => value,
+            StackValue::VarRef(var) => panic!("expected value, got varref: {var:?}"),
+        }
+    }
+}
+
 impl VM {
-    // Explicitely write out result type, and do the Box::pin thing because execute calls
+    fn push_value(&mut self, v: Value<'static>) {
+        self.stack.push(StackValue::Value(v));
+    }
+
+    // Explicitly write out result type, and do the Box::pin thing because execute calls
     // execute_once which calls execute which calls execute_once... which makes rustc give up on
     // deciding whether execute_once() is Send or not, which makes tokio:spawn() very sad.
     pub fn execute(&mut self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
@@ -409,7 +471,7 @@ impl VM {
 
         match &self.program[self.pc.0].contents[instr_pc] {
             Instr::ChangeDir { argv } => {
-                let argv = prepare_args(self, &argv).collect::<Vec<_>>();
+                let argv = prepare_args(&argv).collect::<Vec<_>>();
 
                 if argv.len() != 1 {
                     outln!("Usage: cd <dir>");
@@ -425,7 +487,7 @@ impl VM {
                 }
             }
             Instr::Run { command } => {
-                let (cmd, args) = prepare_invocation(self, &command);
+                let (cmd, args) = prepare_invocation(&command);
                 let mut pcmd = std::process::Command::new(&cmd);
                 pcmd.envs(&*self.env);
                 pcmd.args(args);
@@ -501,13 +563,19 @@ impl VM {
                                 .unwrap();
                             let program = self.program.clone();
                             let block = *block;
+                            let mut scope = self.scope.clone();
+                            // TODO: smart scope cloning -- crush into single scope, and only clone
+                            // what's needed
+                            for scope in &mut scope {
+                                scope.is_inherited = true;
+                            }
                             let mut vm = VM {
                                 fd3_slave: self.fd3_slave.clone(),
                                 slave: self.slave.clone(),
                                 env: self.env.clone(),
                                 program,
                                 stack: Vec::new(),
-                                scope: Vec::new(),
+                                scope,
                                 rstack: Vec::new(),
                                 pc: (0, None),
                                 waiting_on: None,
@@ -524,7 +592,7 @@ impl VM {
                             last_one = Some((WaitingOn::Builtin(shjh), WaitingOn2::Builtin(ah)));
                         },
                         RunPipelineItem::Command(command) => {
-                            let (cmd, args) = prepare_invocation(self, &command);
+                            let (cmd, args) = prepare_invocation(&command);
                             let mut command = std::process::Command::new(cmd);
                             command.envs(&*self.env);
                             command.args(args);
@@ -584,6 +652,14 @@ impl VM {
                 let env = self.env.clone();
                 let program = self.program.clone();
                 let block = *block;
+                let mut scope = self.scope.clone();
+                // TODO: smart scope cloning -- crush into single scope, and only clone what's
+                // needed
+                for scope in &mut scope {
+                    // TODO: differentiate between scope inherited by non-spawned child VM and
+                    // spawned Job VM -- i.e. one is const and one isn't
+                    scope.is_inherited = true;
+                }
                 tokio::spawn(async move {
                     let mut vm = VM {
                         fd3_slave: None,
@@ -613,54 +689,79 @@ impl VM {
                 self.pc = (*block, None);
             },
             Instr::GetColumn => {
-                let key = self.stack.pop().unwrap();
-                let value = self.stack.pop().unwrap();
-                let result = match value {
-                    Value::Table { header, rows } => {
-                        let Some(i) = header.iter().position(|c| *c == key) else {
-                            panic!("No such column {key:?} on table({header:?}).");
-                        };
-                        if rows.len() == 1 {
-                            rows.into_iter().next().unwrap().into_iter().nth(i).unwrap()
-                        } else {
-                            Value::Array(rows.into_iter().map(|mut r| r.remove(i)).collect())
-                        }
-                    }
-                    _ => panic!("invalid target for column index: {value:?}"),
-                };
-                self.stack.push(result);
+                let key = pop_value!(self);
+                let Some(StackValue::VarRef(mut varref)) = self.stack.pop() else { unreachable!() };
+                varref.fields.push(Field::Column(key));
             }
             Instr::GetIndex => {
-                let key = self.stack.pop().unwrap();
-                let value = self.stack.pop().unwrap();
-                let i = match key {
-                    Value::Int(i) => i as usize,
-                    Value::Float(f) => {
-                        let i = f as usize;
-                        assert!(f as f64 == f);
-                        i
-                    }
-                    _ => panic!("index must be an integer"),
-                };
-                let result = match value {
-                    Value::Array(arr) => arr.into_iter().nth(i).expect("out of bounds"),
-                    Value::Table { rows, .. } => Value::Array(rows.into_iter().nth(i).expect("out of bounds")),
-                    _ => panic!("invalid target for row index: {value:?}"),
-                };
-                self.stack.push(result);
+                let key = pop_value!(self);
+                let Some(StackValue::VarRef(mut varref)) = self.stack.pop() else { unreachable!() };
+                varref.fields.push(Field::Index(key));
             }
-            Instr::LoadVar(name) => {
-                self.stack.push(self.get_var(&name).unwrap().clone());
+            Instr::SetVar => {
+                let Some(StackValue::VarRef(varref)) = self.stack.pop() else { unreachable!() };
+                let value = pop_value!(self);
+                for scope in self.scope.iter_mut().rev() {
+                    if let Some(var) = scope.vars.get_mut(&varref.name) {
+                        assert!(!scope.is_inherited); // TODO: external scopes, SetVar messages across VMs
+                        *var = value;
+                        return;
+                    }
+                }
+                self.scope.last_mut().unwrap().vars.insert(varref.name, value);
+            },
+            Instr::Deref => {
+                let Some(StackValue::VarRef(varref)) = self.stack.pop() else { unreachable!() };
+                let mut value = self.get_var(&varref.name).unwrap().clone();
+                for field in varref.fields {
+                    match field {
+                        Field::Column(key) => {
+                            match value {
+                                Value::Table { header, rows } => {
+                                    let Some(i) = header.iter().position(|c| *c == key) else {
+                                        panic!("No such column {key:?} on table({header:?}).");
+                                    };
+                                    value = if rows.len() == 1 {
+                                        rows[0][i].clone()
+                                    } else {
+                                        Value::Array(rows.into_iter().map(|mut r| r.remove(i)).collect())
+                                    };
+                                }
+                                _ => panic!("invalid target for column index: {value:?}"),
+                            }
+                        }
+                        Field::Index(key) => {
+                            let i = match key {
+                                Value::Int(i) => i as usize,
+                                Value::Float(f) => {
+                                    let i = f as usize;
+                                    assert!(f as f64 == f);
+                                    i
+                                }
+                                _ => panic!("index must be an integer"),
+                            };
+                            value = match value {
+                                Value::Array(arr) => arr.get(i).expect("out of bounds").clone(),
+                                Value::Table { rows, .. } => Value::Array(rows.get(i).expect("out of bounds").clone()),
+                                _ => panic!("invalid target for row index: {value:?}"),
+                            };
+                        }
+                    }
+                }
+                self.push_value(value);
+            }
+            Instr::VarRef(name) => {
+                self.stack.push(StackValue::VarRef(VarRef::new(&name)));
             }
             Instr::Load(tok) => {
                 match tok {
                     Token::Word(s) => for item in expand_token(&s) {
-                        self.stack.push(Value::from(item));
+                        self.push_value(Value::from(item));
                     },
-                    Token::String(v) => self.stack.push(Value::from(v.clone())),
-                    Token::Int(v) => self.stack.push(Value::Int(*v)),
-                    Token::Float(v) => self.stack.push(Value::Float(*v)),
-                    Token::Var(s) => self.stack.push(self.get_var(&s.name).unwrap().clone()),
+                    Token::String(v) => self.push_value(Value::from(v.clone())),
+                    Token::Int(v) => self.push_value(Value::Int(*v)),
+                    Token::Float(v) => self.push_value(Value::Float(*v)),
+                    Token::Var(_) => unreachable!(),
                 }
             },
             Instr::Op(op) => {
@@ -684,8 +785,8 @@ impl VM {
                     }
                 }
 
-                let b = self.stack.pop().unwrap();
-                let a = self.stack.pop().unwrap();
+                let b = pop_value!(self);
+                let a = pop_value!(self);
 
                 let op = *op;
                 let result = match op {
@@ -729,7 +830,7 @@ impl VM {
                     Operator::NotLike => todo!(),
                 };
 
-                self.stack.push(result);
+                self.push_value(result);
             }
             Instr::Negate => {
                 todo!()
@@ -743,10 +844,12 @@ impl VM {
                     self.scope.pop().unwrap();
                 } else {
                     self.done = true;
+                    assert!(self.scope.len() == 1);
                     if let Some(sender) = &self.msg_tx {
                         sender.send(VMMessage::Done {
                             stack: std::mem::take(&mut self.stack),
                             last_exit_reason: self.child_exit_stack.pop(),
+                            vars: self.scope.last().unwrap().vars.clone(),
                         }).await.unwrap();
                     }
                     if let Some(sender) = &self.status {
@@ -763,13 +866,86 @@ impl VM {
         }
     }
 
-    pub fn get_var(&self, s: &str) -> Option<&bwine::Value<'static>> {
+    pub fn get_var(&self, s: &str) -> Option<&Value<'static>> {
         for scope in self.scope.iter().rev() {
             if let Some(value) = scope.vars.get(s) {
                 return Some(value);
             }
         }
         None
+    }
+}
+
+#[derive(Debug)]
+enum N<'a, 'v> {
+    V(&'a mut Value<'v>),
+    A(&'a mut [Value<'v>]),
+    T {
+        header: &'a [Value<'v>],
+        row: &'a mut Vec<Value<'v>>,
+    },
+    C {
+        col: usize,
+        rows: &'a mut [Vec<Value<'v>>],
+    }
+}
+
+fn setv<'a>(mut fields: &[Field], lhs: N<'a, '_>, rhs: Value<'static>) {
+    let Some(field) = fields.split_off_first() else {
+        match (lhs, rhs) {
+            (N::T { row, .. }, rhs) => setv(&[], N::A(row), rhs),
+            (N::V(v), rhs) => *v = rhs,
+            (N::A(arr), Value::Array(rhs)) => {
+                if arr.len() != rhs.len() {
+                    panic!("setv(N::A): rhs len doesn't match: {} vs lhs' {}", rhs.len(), arr.len());
+                }
+                for (lhs, rhs) in arr.iter_mut().zip(rhs.into_iter()) {
+                    *lhs = rhs;
+                }
+            }
+            (N::A(_), rhs) => panic!("setv(N::A): rhs is wrong shape ({:?})", rhs),
+            (N::C { rows, .. }, _) => {
+                assert!(rows.len() != 1);
+                panic!("setv(N::C): cannot set column for table.");
+            },
+        }
+        return;
+    };
+
+    match field {
+        Field::Column(key) => {
+            match lhs {
+                N::V(Value::Table { header, rows }) => {
+                    let Some(col) = header.iter().position(|c| c == key) else {
+                        panic!("No such column {key:?} on table({header:?}).");
+                    };
+                    if rows.len() == 1 {
+                        setv(fields, N::V(&mut rows[0][col]), rhs);
+                    } else {
+                        setv(fields, N::C { col, rows }, rhs);
+                    }
+                }
+                _ => panic!("invalid target for column index: {lhs:?}"),
+            }
+        }
+        Field::Index(key) => {
+            let i = match key {
+                Value::Int(i) => *i as usize,
+                Value::Float(f) => {
+                    let i = *f as usize;
+                    assert!(i as f64 == *f);
+                    i
+                }
+                _ => panic!("index must be an integer"),
+            };
+            match lhs {
+                N::V(Value::Array(arr)) => setv(fields, N::V(&mut arr[i]), rhs),
+                N::V(Value::Table { header, rows }) => setv(fields, N::T { header, row: &mut rows[i] }, rhs),
+                N::A(arr) => setv(fields, N::V(&mut arr[i]), rhs),
+                N::C { col, rows } => setv(fields, N::V(&mut rows[i][col]), rhs),
+                _ => panic!("invalid target for row index: {lhs:?}"),
+            }
+        }
     }
 }
 
@@ -794,11 +970,13 @@ pub fn print_program(p: &[Block]) {
                         }
                     },
                 Instr::CallAsync { block } => println!("  - call_async {block}"),
+                Instr::SetVar => println!("  - set_var"),
                 Instr::Call { block } => println!("  - call {block}"),
                 Instr::Load(tok) => println!("  - push {}", tok.to_string()),
-                Instr::LoadVar(s) => println!("  - load {s}"),
+                Instr::VarRef(s) => println!("  - load {s}"),
                 Instr::GetColumn => println!("  - index_column"),
                 Instr::GetIndex => println!("  - index_row"),
+                Instr::Deref => println!("  - deref"),
                 Instr::Op(op) => println!("  - op {op:?}"),
                 Instr::Negate => println!("  - negate"),
                 Instr::Pop => println!("  - pop"),
@@ -851,7 +1029,7 @@ fn add_terminal_controller(cmd: &mut std::process::Command, slave: BorrowedFd) {
     }
 }
 
-fn prepare_args(vm: &VM, argv: &[Token]) -> impl Iterator<Item = String> {
+fn prepare_args(argv: &[Token]) -> impl Iterator<Item = String> + use<'_> {
     argv.iter()
         .map(|tok| {
             match tok {
@@ -865,8 +1043,8 @@ fn prepare_args(vm: &VM, argv: &[Token]) -> impl Iterator<Item = String> {
         .flatten()
 }
 
-fn prepare_invocation<'a>(vm: &VM, c: &'a Command2) -> (&'a Path, impl Iterator<Item = String>) {
-    (&c.path, prepare_args(vm, &c.args))
+fn prepare_invocation<'a>(c: &'a Command2) -> (&'a Path, impl Iterator<Item = String>) {
+    (&c.path, prepare_args(&c.args))
 }
 
 fn expand_token(token: &str) -> Vec<String> {
@@ -907,7 +1085,7 @@ mod builtin {
 
     use std::io::Read;
     use anyhow::Result;
-    use bwine::{self, Value, Token};
+    use bwine::{self, Token};
 
     pub async fn filter(
         vm: &mut VM,
@@ -978,13 +1156,14 @@ mod builtin {
                                 vm.stack.clear();
                                 vm.pc = (block, None);
                                 vm.scope.push(Scope {
+                                    is_inherited: false,
                                     vars: [("_".to_owned(), Value::Table {
                                         header: headers.clone(),
                                         rows: vec![row.clone()]
                                     })].into_iter().collect(),
                                 });
                                 vm.execute().await;
-                                if Some(Value::Bool(true)) == vm.stack.pop() {
+                                if pop_value!(vm) == Value::Bool(true) {
                                     stt.row(row).unwrap();
                                 }
 
