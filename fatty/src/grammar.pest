@@ -35,7 +35,8 @@ b_or_op       =  { "-or"  ~ !(ASCII_ALPHANUMERIC | "_") }
 b_not_op      =  { "-not" ~ !(ASCII_ALPHANUMERIC | "_") }
 ops           = @{ ("-eq"|"-ne"|"-ge"|"-gt"|"-le"|"-lt"|"-lk"|"-nk"|"-"|"+"|"*"|"/") ~ !(ASCII_ALPHANUMERIC | "_") }
 
-token         = _{ var | literal | unquoted }
+// token: a value, may contain a value or a computable expression
+token         = _{ var | table | array | literal | unquoted }
 
 var           =  { "$" ~ var_name ~ var_suffix* }
 var_name      = @{ (ASCII_ALPHANUMERIC | "_")+ }
@@ -45,9 +46,18 @@ field_col_br  =  { ".[" ~ stmt ~ "]" }
 field_index_l =  { "[" ~ literal ~ "]" }
 field_index   =  { "[" ~ stmt ~ "]" }
 
-literal       = _{ float_lit | num_lit | single_quoted | double_quoted }
-float_lit     = @{ num_lit ~ "." ~ num_lit }
-num_lit       = @{ ('0'..'9')+ }
+table         =  { "[" ~ NEWLINE* ~ header_row ~ NEWLINE* ~ ";" ~ NEWLINE* ~ (row ~ NEWLINE*)* ~ "]" }
+header_row    =  { "[" ~ single+ ~ "]" }
+col_name      = @{ (ASCII_ALPHANUMERIC | "_")+ }
+row           =  { "[" ~ single+ ~ "]" }
+array         =  { "[" ~ single* ~ "]" }
+
+// literal: simple literal, cannot contain expressions
+// TODO: this can be merged with token by modifying the parser slightly
+literal       = _{ float_lit | integer | single_quoted | double_quoted }
+
+float_lit     = @{ integer ~ "." ~ integer }
+integer       = @{ ('0'..'9')+ }
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 double_quoted = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
 unquoted      = @{

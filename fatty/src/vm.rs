@@ -48,28 +48,57 @@ pub enum RunPipelineItem {
 #[derive(Debug, Clone)]
 pub enum Instr {
     ChangeDir { argv: Vec<Token> },
+
+    /// Execute command in current context
     Run {
         command: Command2,
         // cond: RunCondition,
     },
+
+    /// Execute pipeline in current context
     RunPipeline {
         items: Vec<RunPipelineItem>,
         // cond: RunCondition,
     },
+
+    /// Where block. Currently allowed only in pipelines (RunPipelineItem), so commented out here.
     // Where { func: usize },
+
+    /// Execute block in new async context
     CallAsync { block: usize },
+
+    /// Execute block in current context
     Call { block: usize },
+
+    /// Push a non-Table/Array/Var Token to the stack.
     Load(Token),
 
+    /// Instructions to load a variable. VarRef starts out by pushing a VarRef with an empty set of
+    /// fields; GetColumn/Index adds fields, and Deref/SetVar finalizes it by either retrieving the
+    /// value or setting the variable
     VarRef(String),
     GetColumn,
     GetIndex,
     Deref,
     SetVar,
 
+    /// Collect the top N stack elements into a single Value::Array, pushing it.
+    CollectArray(usize),
+
+    /// Collect the top N stack elements, assumed to be Value::Array, plus an additional
+    /// Value::Array for the header, into a single Value::Table { header, rows }
+    CollectTable(usize),
+
+    /// Execute an operator on the top two elements of the stack.
     Op(Operator),
+
+    /// Negate the TOS
     Negate,
+
+    /// Pop the TOS
     Pop,
+
+    /// Pop from rstack, returning if possible or otherwise marking the VM as "done"
     Return,
 }
 
@@ -119,6 +148,25 @@ fn compile_token(
                 }
             }
             out.push(Instr::Deref);
+        }
+        Token::Array(Array { items }) => {
+            for item in items.iter().rev() {
+                compile_single(path, item, out, blocks)?;
+            }
+            out.push(Instr::CollectArray(items.len()));
+        }
+        Token::Table(Table { header, rows }) => {
+            for item in header.iter().rev() {
+                compile_single(path, item, out, blocks)?;
+            }
+            out.push(Instr::CollectArray(header.len()));
+            for row in rows.iter().rev() {
+                for item in row.iter().rev() {
+                    compile_single(path, item, out, blocks)?;
+                }
+                out.push(Instr::CollectArray(row.len()));
+            }
+            out.push(Instr::CollectTable(rows.len()));
         }
         _ => out.push(Instr::Load(tok.clone())),
     }
@@ -692,11 +740,13 @@ impl VM {
                 let key = pop_value!(self);
                 let Some(StackValue::VarRef(mut varref)) = self.stack.pop() else { unreachable!() };
                 varref.fields.push(Field::Column(key));
+                self.stack.push(StackValue::VarRef(varref));
             }
             Instr::GetIndex => {
                 let key = pop_value!(self);
                 let Some(StackValue::VarRef(mut varref)) = self.stack.pop() else { unreachable!() };
                 varref.fields.push(Field::Index(key));
+                self.stack.push(StackValue::VarRef(varref));
             }
             Instr::SetVar => {
                 let Some(StackValue::VarRef(varref)) = self.stack.pop() else { unreachable!() };
@@ -704,11 +754,31 @@ impl VM {
                 for scope in self.scope.iter_mut().rev() {
                     if let Some(var) = scope.vars.get_mut(&varref.name) {
                         assert!(!scope.is_inherited); // TODO: external scopes, SetVar messages across VMs
-                        *var = value;
+                        setv(&varref.fields, N::V(var), value);
                         return;
                     }
                 }
                 self.scope.last_mut().unwrap().vars.insert(varref.name, value);
+            },
+            Instr::CollectArray(n) => {
+                let mut accm = Vec::new();
+                for _ in 0..*n {
+                    accm.push(pop_value!(self));
+                }
+                self.push_value(Value::Array(accm));
+            },
+            Instr::CollectTable(n) => {
+                let mut rows = Vec::new();
+                for _ in 0..*n {
+                    let Value::Array(row) = pop_value!(self)
+                        else { unreachable!() };
+                    rows.push(row);
+                }
+
+                let Value::Array(header) = pop_value!(self)
+                    else { unreachable!() };
+
+                self.push_value(Value::Table { header, rows });
             },
             Instr::Deref => {
                 let Some(StackValue::VarRef(varref)) = self.stack.pop() else { unreachable!() };
@@ -762,6 +832,8 @@ impl VM {
                     Token::Int(v) => self.push_value(Value::Int(*v)),
                     Token::Float(v) => self.push_value(Value::Float(*v)),
                     Token::Var(_) => unreachable!(),
+                    Token::Array(_) => unreachable!(),
+                    Token::Table(_) => unreachable!(),
                 }
             },
             Instr::Op(op) => {
@@ -891,9 +963,10 @@ enum N<'a, 'v> {
 }
 
 fn setv<'a>(mut fields: &[Field], lhs: N<'a, '_>, rhs: Value<'static>) {
+    // Get the latest field and take a look at it, UNLESS fields is empty, in which case
+    // split_off_first returns None and we set the variable
     let Some(field) = fields.split_off_first() else {
         match (lhs, rhs) {
-            (N::T { row, .. }, rhs) => setv(&[], N::A(row), rhs),
             (N::V(v), rhs) => *v = rhs,
             (N::A(arr), Value::Array(rhs)) => {
                 if arr.len() != rhs.len() {
@@ -908,6 +981,8 @@ fn setv<'a>(mut fields: &[Field], lhs: N<'a, '_>, rhs: Value<'static>) {
                 assert!(rows.len() != 1);
                 panic!("setv(N::C): cannot set column for table.");
             },
+            // Simplify N::T into N::A
+            (N::T { row, .. }, rhs) => setv(&[], N::A(row), rhs),
         }
         return;
     };
@@ -977,6 +1052,8 @@ pub fn print_program(p: &[Block]) {
                 Instr::GetColumn => println!("  - index_column"),
                 Instr::GetIndex => println!("  - index_row"),
                 Instr::Deref => println!("  - deref"),
+                Instr::CollectArray(n) => println!("  - collect_array {n}"),
+                Instr::CollectTable(n) => println!("  - collect_table {n}"),
                 Instr::Op(op) => println!("  - op {op:?}"),
                 Instr::Negate => println!("  - negate"),
                 Instr::Pop => println!("  - pop"),
@@ -1037,6 +1114,8 @@ fn prepare_args(argv: &[Token]) -> impl Iterator<Item = String> + use<'_> {
                 Token::Float(float) => vec![float.to_string()],
                 Token::Word(s) => expand_token(&s),
                 Token::Var(_) => todo!(),
+                Token::Array(_) => todo!(),
+                Token::Table(_) => todo!(),
                 Token::String(s) => vec![s.clone()],
             }
         })

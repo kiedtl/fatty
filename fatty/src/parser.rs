@@ -48,17 +48,32 @@ pub enum FieldExpr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Array {
+    pub items: Vec<Single>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Table {
+    pub header: Vec<Single>,
+    pub rows: Vec<Vec<Single>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Int(i128),
     Float(f64),
     String(String),
     Word(String),
     Var(Var),
+    Array(Array),
+    Table(Table),
 }
 
 impl Token {
     pub fn to_string(&self) -> String {
         match self {
+            Token::Array(_) => todo!(),
+            Token::Table(_) => todo!(),
             Token::Int(i) => i.to_string(),
             Token::Float(i) => i.to_string(),
             Token::String(s) => s.clone(),
@@ -208,9 +223,36 @@ fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
             let name = name.unwrap();
             Token::Var(Var { name, fields })
         },
+        Rule::array => {
+            Token::Array(Array {
+                items: pair.into_inner()
+                    .map(|p| parse_single(p))
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        },
+        Rule::table => {
+            let mut inner = pair.into_inner();
+            let header_pair = inner.next().unwrap();
+            let header = match header_pair.as_rule() {
+                Rule::header_row => {
+                    header_pair.into_inner()
+                        .map(|p| parse_single(p))
+                        .collect::<Result<Vec<_>, _>>()?
+                }
+                _ => unreachable!(),
+            };
+            let rows = inner
+                .map(|row_pair| {
+                    row_pair.into_inner()
+                        .map(|p| parse_single(p))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Token::Table(Table { header, rows })
+        },
         Rule::single_quoted => Token::String(pair.as_str()[1..].strip_suffix('\'').unwrap().to_owned()),
         Rule::double_quoted => Token::String(unescape_dq(pair.as_str()[1..].strip_suffix('"').unwrap())),
-        Rule::num_lit => Token::Int(pair.as_str().parse::<i128>().unwrap()),
+        Rule::integer => Token::Int(pair.as_str().parse::<i128>().unwrap()),
         Rule::float_lit => Token::Float(pair.as_str().parse::<f64>().unwrap()),
         Rule::unquoted => Token::Word(unescape_unquoted(pair.as_str())),
         s => panic!("todo: {:?}", s),
