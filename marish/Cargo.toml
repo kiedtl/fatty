@@ -1,0 +1,21 @@
+[package]
+name = "marish"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+brandywine = { path = "../brandywine" }
+futures = "0.3.32"
+glob = "0.3.3"
+itertools = "0.14.0"
+libc = "0.2.184"
+pest = "2.8.6"
+pest_derive = "2.8.6"
+rustix-openpty = "0.2.0"
+rustix = { version = "1.1.4", features = ["net"] }
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.51.0", features = ["rt", "rt-multi-thread", "sync"] }
+unicode-segmentation = "1.13.2"
+anyhow = "1.0.104"
+chrono = "0.4.45"
+num-traits = "0.2.19"

@@ -1,23 +1,17 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::ffi::OsString;
 use std::os::unix::process::CommandExt as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
-use crate::{ExitReason, Execution};
+use crate::ExitReason;
 use crate::parser::*;
-use crate::{out, outln};
-use crate::utils::{self, FdRw};
+use crate::utils::FdRw;
 
 use bwine::Value;
-use itertools::Itertools;
 use futures::future::{FutureExt, Shared, BoxFuture};
 use rustix::process::Pid;
-use rustix::fd::{FromRawFd, AsFd, AsRawFd, OwnedFd, BorrowedFd};
+use rustix::fd::{AsFd, AsRawFd, OwnedFd, BorrowedFd};
 use tokio::sync::{mpsc, watch};
 
 // pub enum RunCondition {
@@ -29,13 +23,7 @@ use tokio::sync::{mpsc, watch};
 pub struct Command2 {
     pub path: PathBuf,
     pub orig: String,
-    pub args: Vec<Token>,
-}
-
-impl Command2 {
-    pub fn to_string(&self) -> String {
-        format!("{} {}", self.orig, self.args.iter().map(|t| t.to_string()).join(" "))
-    }
+    pub argc: usize, // 0 means no arguments.
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +35,7 @@ pub enum RunPipelineItem {
 
 #[derive(Debug, Clone)]
 pub enum Instr {
-    ChangeDir { argv: Vec<Token> },
+    ChangeDir,
 
     /// Execute command in current context
     Run {
@@ -105,229 +93,6 @@ pub enum Instr {
 #[derive(Debug, Clone)]
 pub struct Block {
     pub contents: Vec<Instr>,
-}
-
-#[derive(Clone, Debug)]
-pub enum CompileError {
-    CommandNotFound(LineCol, String),
-}
-
-pub fn compile(path: &[PathBuf], ast: &[Ast]) -> Result<Vec<Block>, CompileError> {
-    let mut blocks = vec![Block { contents: Vec::new() }];
-
-    let mut base_block = Vec::new();
-    for ast in ast {
-        compile_ast(path, ast, &mut base_block, &mut blocks)?;
-    }
-
-    base_block.push(Instr::Return);
-    blocks[0].contents = base_block;
-
-    Ok(blocks)
-}
-
-fn compile_token(
-    path: &[PathBuf],
-    tok: &Token,
-    out: &mut Vec<Instr>,
-    blocks: &mut Vec<Block>,
-) -> Result<(), CompileError> {
-    match tok {
-        Token::Var(v) => {
-            out.push(Instr::VarRef(v.name.clone()));
-            for field in &v.fields {
-                match field {
-                    FieldExpr::Column(operand) => {
-                        compile_single(path, operand, out, blocks)?;
-                        out.push(Instr::GetColumn);
-                    }
-                    FieldExpr::Index(operand) => {
-                        compile_single(path, operand, out, blocks)?;
-                        out.push(Instr::GetIndex);
-                    }
-                }
-            }
-            out.push(Instr::Deref);
-        }
-        Token::Array(Array { items }) => {
-            for item in items.iter().rev() {
-                compile_single(path, item, out, blocks)?;
-            }
-            out.push(Instr::CollectArray(items.len()));
-        }
-        Token::Table(Table { header, rows }) => {
-            for item in header.iter().rev() {
-                compile_single(path, item, out, blocks)?;
-            }
-            out.push(Instr::CollectArray(header.len()));
-            for row in rows.iter().rev() {
-                for item in row.iter().rev() {
-                    compile_single(path, item, out, blocks)?;
-                }
-                out.push(Instr::CollectArray(row.len()));
-            }
-            out.push(Instr::CollectTable(rows.len()));
-        }
-        _ => out.push(Instr::Load(tok.clone())),
-    }
-    Ok(())
-}
-
-fn compile_single(
-    path: &[PathBuf],
-    operand: &Single,
-    out: &mut Vec<Instr>,
-    blocks: &mut Vec<Block>
-) -> Result<(), CompileError> {
-    match operand {
-        Single::Token(tok) => compile_token(path, &tok, out, blocks)?,
-        Single::Sub(body) => {
-            let mut b = Block { contents: Vec::new() };
-            compile_ast(path, body, &mut b.contents, blocks)?;
-            b.contents.push(Instr::Return);
-            blocks.push(b);
-            out.push(Instr::Call { block: blocks.len() - 1 });
-        },
-    }
-    Ok(())
-}
-
-fn compile_ast(
-    path: &[PathBuf],
-    ast: &Ast,
-    out: &mut Vec<Instr>,
-    blocks: &mut Vec<Block>
-) -> Result<(), CompileError> {
-    match ast {
-        Ast::Stmt(_lc, Stmt::Assignment(Assignment { lhs, rhs })) => {
-            compile_single(path, rhs, out, blocks)?;
-            out.push(Instr::VarRef(lhs.name.clone()));
-            for field in &lhs.fields {
-                match field {
-                    FieldExpr::Column(operand) => {
-                        compile_single(path, &operand, out, blocks)?;
-                        out.push(Instr::GetColumn);
-                    }
-                    FieldExpr::Index(operand) => {
-                        compile_single(path, &operand, out, blocks)?;
-                        out.push(Instr::GetIndex);
-                    }
-                }
-            }
-            out.push(Instr::SetVar);
-        }
-        Ast::Stmt(_lc, Stmt::Sub(body)) => {
-            let mut b = Block { contents: Vec::new() };
-            compile_ast(path, body, &mut b.contents, blocks)?;
-            b.contents.push(Instr::Return);
-            blocks.push(b);
-            out.push(Instr::Call { block: blocks.len() - 1 });
-        }
-        Ast::Stmt(_lc, Stmt::BoolExpr(BoolExpr { lhs, rhs, op })) => {
-            compile_single(path, lhs, out, blocks)?;
-            compile_single(path, rhs, out, blocks)?;
-            out.push(Instr::Op(*op));
-        }
-        Ast::Stmt(_lc, Stmt::BoolNegate(inner)) => {
-            compile_single(path, inner, out, blocks)?;
-            out.push(Instr::Negate);
-        },
-        Ast::Stmt(_lc, Stmt::Where(_)) => todo!(),
-        Ast::Stmt(_lc, Stmt::Command(command)) => {
-            if let Some(command_str) = command.argv.get(0) {
-                match command_str {
-                    Token::Word(s) if s == "cd" => {
-                        out.push(Instr::ChangeDir { argv: command.argv[1..].to_vec() });
-                    }
-                    _ => {
-                        let c = command_str.to_string();
-                        let path = resolve(path, &c)
-                            .ok_or_else(|| CompileError::CommandNotFound(command.lc, c.clone()))?;
-                        let args = command.argv.iter().skip(1).cloned().collect::<Vec<_>>();
-                        let orig = c.clone();
-                        out.push(Instr::Run { command: Command2 { orig, path, args } });
-                    },
-                }
-            }
-        },
-        Ast::Stmt(_lc, Stmt::Pipeline(Pipeline { items })) => {
-            let is_simple = !items.iter().any(|c| matches!(c, PipelineItem::Sub(_)));
-
-            if is_simple {
-                out.push(Instr::RunPipeline {
-                    items: items.into_iter()
-                        .map(|c| match c {
-                            PipelineItem::Command(c) => {
-                                // FIXME: handle "cd" here
-                                let cmd = c.argv[0].to_string();
-                                let path = resolve(path, &cmd)
-                                    .ok_or_else(|| CompileError::CommandNotFound(c.lc, cmd.clone()))?;
-                                let args = c.argv.iter().skip(1).cloned().collect::<Vec<_>>();
-                                let orig = cmd.clone();
-                                Ok(RunPipelineItem::Command(Command2 { orig, args, path }))
-                            },
-                            PipelineItem::Where(func) => {
-                                if let Some(func) = func {
-                                    let mut b = Block { contents: Vec::new() };
-                                    compile_ast(path, func, &mut b.contents, blocks)?;
-                                    b.contents.push(Instr::Return);
-                                    blocks.push(b);
-                                    Ok(RunPipelineItem::Where { block: blocks.len() - 1 })
-                                } else {
-                                    Ok(RunPipelineItem::Where { block: 0 })
-                                }
-                            },
-                            // PipelineItem::Query(q) => {
-                            //     Ok(RunPipelineItem::Query(q.clone()))
-                            // },
-                            PipelineItem::Sub(_) => todo!(),
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
-                });
-            } else {
-                todo!()
-            }
-        }
-        Ast::Stmt(_lc, Stmt::Background(ast)) => {
-            out.push(Instr::CallAsync { block: blocks.len() });
-
-            let mut b = Block { contents: Vec::new() };
-            compile_ast(path, ast, &mut b.contents, blocks)?;
-            b.contents.push(Instr::Return);
-            blocks.push(b);
-        },
-        _ => todo!(),
-    }
-
-    Ok(())
-}
-
-fn resolve(paths: &[PathBuf], cmd: &str) -> Option<PathBuf> {
-    fn is_valid(met: Option<fs::Metadata>) -> bool {
-        met
-            .map(|m| !m.file_type().is_dir() && m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-
-    if cmd.as_bytes().contains(&b'/') {
-        let path = PathBuf::from(cmd);
-        return is_valid(fs::metadata(&path).ok()).then_some(path);
-    }
-
-    for path in paths {
-        match fs::read_dir(path) {
-            Ok(iter) => {
-                for item in iter {
-                    let Ok(item) = item else { continue };
-                    if item.file_name() == OsStr::new(cmd) && is_valid(item.metadata().ok()) {
-                        return Some(item.path().to_owned());
-                    }
-                }
-            },
-            Err(_) => continue,
-        }
-    }
-    None
 }
 
 #[derive(Clone)]
@@ -469,25 +234,6 @@ impl VM {
                         match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
                             Ok(Some((_, status))) => {
                                 let reason = ExitReason::from(status);
-
-                                match reason {
-                                    ExitReason::Normal(_) => (),
-                                    ExitReason::Signal { signal, .. } => out!("{}", utils::signal_to_string(signal)),
-                                    ExitReason::Unknown { sigval: Some(s), .. } => out!("Signal({s})"),
-                                    ExitReason::Unknown { sigval: None, .. } => out!("Exited (unknown)"),
-                                }
-
-                                match reason {
-                                    ExitReason::Signal { cored: true, .. }
-                                    | ExitReason::Unknown { cored: true, .. } => out!(" (core dumped)"),
-                                    _ => (),
-                                }
-
-                                match reason {
-                                    ExitReason::Normal(_) => (),
-                                    _ => outln!(""), // Newline
-                                }
-
                                 self.child_exit_stack.push(reason);
                                 if let Some(sender) = &self.status {
                                     sender.send_modify(move |previous| {
@@ -518,16 +264,10 @@ impl VM {
         self.pc.1 = Some(instr_pc);
 
         match &self.program[self.pc.0].contents[instr_pc] {
-            Instr::ChangeDir { argv } => {
-                let argv = prepare_args(&argv).collect::<Vec<_>>();
-
-                if argv.len() != 1 {
-                    outln!("Usage: cd <dir>");
-                    return;
-                }
-
-                if let Err(e) = std::env::set_current_dir(&argv[0]) {
-                    outln!("cd: {e:?}");
+            Instr::ChangeDir => {
+                let path = pop_value!(self).to_string();
+                if let Err(_e) = std::env::set_current_dir(&path) {
+                    //outln!("cd: {e:?}");
                 }
 
                 if let Some(sender) = &self.msg_tx {
@@ -535,8 +275,12 @@ impl VM {
                 }
             }
             Instr::Run { command } => {
-                let (cmd, args) = prepare_invocation(&command);
-                let mut pcmd = std::process::Command::new(&cmd);
+                let args = (0..command.argc)
+                    .map(|_| pop_value!(self))
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>();
+
+                let mut pcmd = std::process::Command::new(&command.path);
                 pcmd.envs(&*self.env);
                 pcmd.args(args);
                 if let Some(slave) = &self.slave {
@@ -569,8 +313,6 @@ impl VM {
                 }
             },
             Instr::RunPipeline { items } => {
-                use std::process::Stdio;
-
                 let mut reader;
                 let mut next_reader = None;
                 let mut writer = None;
@@ -640,8 +382,12 @@ impl VM {
                             last_one = Some((WaitingOn::Builtin(shjh), WaitingOn2::Builtin(ah)));
                         },
                         RunPipelineItem::Command(command) => {
-                            let (cmd, args) = prepare_invocation(&command);
-                            let mut command = std::process::Command::new(cmd);
+                            let args = (0..command.argc)
+                                .map(|_| pop_value!(self))
+                                .map(|v| v.to_string())
+                                .collect::<Vec<_>>();
+
+                            let mut command = std::process::Command::new(&command.path);
                             command.envs(&*self.env);
                             command.args(args);
 
@@ -808,7 +554,7 @@ impl VM {
                                     assert!(f as f64 == f);
                                     i
                                 }
-                                _ => panic!("index must be an integer"),
+                                c => panic!("index must be an integer, got {c:?}"),
                             };
                             value = match value {
                                 Value::Array(arr) => arr.get(i).expect("out of bounds").clone(),
@@ -990,6 +736,12 @@ fn setv<'a>(mut fields: &[Field], lhs: N<'a, '_>, rhs: Value<'static>) {
     match field {
         Field::Column(key) => {
             match lhs {
+                N::T { header, row } => {
+                    let Some(col) = header.iter().position(|c| c == key) else {
+                        panic!("No such column {key:?} on table({header:?}).");
+                    };
+                    setv(fields, N::V(&mut row[col]), rhs);
+                }
                 N::V(Value::Table { header, rows }) => {
                     let Some(col) = header.iter().position(|c| c == key) else {
                         panic!("No such column {key:?} on table({header:?}).");
@@ -1030,16 +782,15 @@ pub fn print_program(p: &[Block]) {
         println!("Block {blocki}:");
         for instr in &block.contents {
             match instr {
-                Instr::ChangeDir { argv }
-                    => println!("  - cd {}", argv.iter().map(|t| t.to_string()).join(" ")),
-                Instr::Run { command: Command2 { path, args, .. } }
-                    => println!("  - run {}: {}", path.display(), args.iter().map(|t| t.to_string()).join(" ")),
+                Instr::ChangeDir => println!("  - cd"),
+                Instr::Run { command: Command2 { path, argc, .. } }
+                    => println!("  - run {} ({argc} args)", path.display()),
                 Instr::RunPipeline { items }
                     => {
                         println!("  - create_pipe");
                         for item in items {
                             match item {
-                                RunPipelineItem::Command(c) => println!("  - run {}: {}", c.path.display(), c.args.iter().map(|t| t.to_string()).join(" ")),
+                                RunPipelineItem::Command(c) => println!("  - run {}: ({} args)", c.path.display(), c.argc),
                                 RunPipelineItem::Where { block } => println!("  - where {block}"),
                             }
                         }
@@ -1104,26 +855,6 @@ fn add_terminal_controller(cmd: &mut std::process::Command, slave: BorrowedFd) {
             Ok(())
         });
     }
-}
-
-fn prepare_args(argv: &[Token]) -> impl Iterator<Item = String> + use<'_> {
-    argv.iter()
-        .map(|tok| {
-            match tok {
-                Token::Int(int) => vec![int.to_string()],
-                Token::Float(float) => vec![float.to_string()],
-                Token::Word(s) => expand_token(&s),
-                Token::Var(_) => todo!(),
-                Token::Array(_) => todo!(),
-                Token::Table(_) => todo!(),
-                Token::String(s) => vec![s.clone()],
-            }
-        })
-        .flatten()
-}
-
-fn prepare_invocation<'a>(c: &'a Command2) -> (&'a Path, impl Iterator<Item = String>) {
-    (&c.path, prepare_args(&c.args))
 }
 
 fn expand_token(token: &str) -> Vec<String> {
@@ -1212,7 +943,7 @@ mod builtin {
                                 Token::Table => s = S::H,
                                 Token::Array(_) => s = S::PA,
                                 _ => {
-                                    outln!("Expected table or array.");
+                                    //outln!("Expected table or array.");
                                     return Ok(());
                                 }
                             }

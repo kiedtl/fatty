@@ -1,5 +1,3 @@
-use itertools::Itertools;
-
 use pest::Parser;
 use pest::iterators::Pair;
 use pest_derive::Parser;
@@ -83,25 +81,11 @@ impl Token {
     }
 }
 
-// #[derive(Debug, Clone, PartialEq)]
-// pub struct Query {
-//     pub lc: LineCol,
-//     pub items: Vec<Token>,
-// }
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
     pub lc: LineCol,
-    pub argv: Vec<Token>,
-}
-
-impl Command {
-    pub fn to_string(&self) -> String {
-        self.argv
-            .iter()
-            .map(|t| t.to_string())
-            .join(" ")
-    }
+    pub cmd: String,
+    pub argv: Vec<Single>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -210,12 +194,12 @@ fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
                         fields.push(FieldExpr::Column(Single::Sub(sub)));
                     },
                     Rule::field_index_l => {
-                        let value = item.as_str().to_owned();
-                        fields.push(FieldExpr::Index(Single::Token(Token::String(value))));
+                        let v = parse_token(item.into_inner().next().unwrap())?;
+                        fields.push(FieldExpr::Index(Single::Token(v)));
                     },
                     Rule::field_index => {
                         let sub = Box::new(parse_ast(item.into_inner().next().unwrap())?);
-                        fields.push(FieldExpr::Column(Single::Sub(sub)));
+                        fields.push(FieldExpr::Index(Single::Sub(sub)));
                     },
                     _ => unreachable!(),
                 }
@@ -259,32 +243,23 @@ fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
     })
 }
 
-fn parse_tokens<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<(LineCol, Vec<Token>), String> {
+fn parse_command<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Command, String> {
+    let mut cmd = None;
     let mut argv = Vec::new();
     let mut lc = None;
     for pair in pairs {
         if lc.is_none() {
-            let l = pair.line_col().0;
-            let s = pair.as_span();
-            lc = Some(LineCol(l, s.start(), s.end()));
+            lc = Some(span_lc(&pair));
+            cmd = Some(pair.as_str().to_owned());
+        } else {
+            argv.push(parse_single(pair)?);
         }
-
-        argv.push(parse_token(pair)?);
     }
 
     let lc = lc.unwrap();
-    Ok((lc, argv))
+    let cmd = cmd.unwrap();
+    Ok(Command { lc, cmd, argv })
 }
-
-fn parse_command<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Command, String> {
-    let (lc, argv) = parse_tokens(pairs)?;
-    Ok(Command { lc, argv })
-}
-
-// fn parse_query<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Query, String> {
-//     let (lc, items) = parse_tokens(pairs)?;
-//     Ok(Query { lc, items })
-// }
 
 fn span_lc(pair: &Pair<Rule>) -> LineCol {
     let l = pair.line_col().0;
@@ -436,24 +411,4 @@ pub fn parse_str(input: &str) -> Result<Vec<Ast>, String> {
 
     assert_eq!(None, pairs.next());
     ast
-}
-
-mod tests {
-    use super::*;
-
-    #[test]
-    pub fn basic() {
-        macro_rules! c {
-            ($cmd:literal $(, $arg:literal)*) => {
-                Ok(($cmd.to_string(), vec![$($arg.to_string(),)*]))
-            }
-        }
-
-        assert_eq!(c!("ls"),                parse_command("ls"));
-        assert_eq!(c!("ls", "test"),        parse_command("ls test"));
-        assert_eq!(c!("ls", "test"),        parse_command("ls 'test'"));
-        assert_eq!(c!("ls", "test"),        parse_command("ls \"test\""));
-        assert_eq!(c!("ls", "test"),        parse_command("ls \"test\""));
-        assert_eq!(c!("ls", "a", "b", "c"), parse_command("ls a \"b\" 'c'"));
-    }
 }

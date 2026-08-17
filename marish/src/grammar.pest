@@ -1,12 +1,12 @@
 WHITESPACE    = _{ " " | "\t" }
 
 program       =  { SOI ~ stmt+ ~ EOI }
-stmt          =  { assignment | background | chain | pipeline | b_expr | sub | command }
+stmt          =  { (assignment | background | chain | pipeline | b_expr | sub | command) ~ "\n"* }
 background    =  { (chain | pipeline | sub | command) ~ "&" }
 chain         =  { (pipeline | b_expr | sub | command) ~ (connector ~ (pipeline | b_expr | sub | command))+ }
 pipeline      =  { (sub | special | command | special) ~ ("|" ~ (sub | special | command | special))+ }
 sub           =  { "(" ~ stmt+ ~ ")" }
-command       =  { unquoted ~ token* }
+command       =  { unquoted ~ single* }
 assignment    =  { var ~ "=" ~ (token | stmt) }
 
 connector     =  { "&&" | "||" }

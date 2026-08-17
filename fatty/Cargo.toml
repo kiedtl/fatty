@@ -5,19 +5,21 @@ edition = "2024"
 default-run = "fatty"
 
 [dependencies]
+anyhow = "1.0.104"
 bitflags = "2.11.0"
 brandywine = { path = "../brandywine" }
+chrono = "0.4.45"
 clap = { version = "4.6.0", features = ["derive"] }
 futures = "0.3.32"
 glob = "0.3.3"
-iced = { git = "https://github.com/iced-rs/iced", rev = "d188d6fa2aa003ee52e1d23fde108546c993976b", features = [ "advanced", "image", "canvas", "lazy", "qr_code", "tokio" ]}
 iced_core = { git = "https://github.com/iced-rs/iced", rev = "d188d6fa2aa003ee52e1d23fde108546c993976b" }
+iced = { git = "https://github.com/iced-rs/iced", rev = "d188d6fa2aa003ee52e1d23fde108546c993976b", features = [ "advanced", "image", "canvas", "lazy", "qr_code", "tokio" ]}
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "webp"] }
 inotify = "0.11.1"
 itertools = "0.14.0"
 libc = "0.2.184"
-pest = "2.8.6"
-pest_derive = "2.8.6"
+marish = { path = "../marish" }
+num-traits = "0.2.19"
 raw-window-handle = "0.6"
 rustix-openpty = "0.2.0"
 rustix = { version = "1.1.4", features = ["net"] }
@@ -25,6 +27,3 @@ serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.51.0", features = ["sync"] }
 unicode-segmentation = "1.13.2"
 vte = { version = "0.15.0", features = ["bitflags", "ansi"] }
-anyhow = "1.0.104"
-chrono = "0.4.45"
-num-traits = "0.2.19"

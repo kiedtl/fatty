@@ -27,6 +27,12 @@ use rustix::process::{kill_process, Pid, Signal};
 use rustix::fs::FileType;
 use tokio::sync::{mpsc, watch, Mutex as TokioMutex};
 use vte;
+use marish::{
+    ExitReason,
+    compiler,
+    parser::{self, LineCol},
+    vm::{self, VMStatus},
+};
 
 use iced::futures::stream;
 use iced::window;
@@ -52,17 +58,13 @@ mod bolger;
 mod colors;
 mod bwine_ui;
 mod helpers;
-mod parser;
 mod styles;
 mod term;
 mod utils;
-mod vm;
 mod widgets;
 
 use helpers::*;
 use styles::CS;
-use vm::VMStatus;
-use parser::LineCol;
 use widgets::scrollable::scrollable;
 use widgets::input::input;
 use widgets::controller;
@@ -176,38 +178,6 @@ impl Execution {
         //     rustix::io::close(self.fd3_master.as_raw_fd());
         //     rustix::io::close(self.fd3_slave.as_raw_fd());
         // }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ExitReason {
-    Normal(i32),
-    Signal {
-        signal: Signal,
-        cored: bool,
-    },
-    Unknown {
-        sigval: Option<i32>,
-        cored: bool,
-    },
-}
-
-impl From<rustix::process::WaitStatus> for ExitReason {
-    fn from(status: rustix::process::WaitStatus) -> ExitReason {
-        let raw = status.as_raw();
-        let cored = raw & 0x80 != 0;
-
-        if status.signaled() && let Some(sigval) = status.terminating_signal() {
-            if let Some(signal) = Signal::from_named_raw(sigval) {
-                ExitReason::Signal { signal, cored }
-            } else {
-                ExitReason::Unknown { sigval: Some(sigval), cored }
-            }
-        } else if let Some(exit) = status.exit_status() {
-            ExitReason::Normal(exit)
-        } else {
-            ExitReason::Unknown { sigval: None, cored }
-        }
     }
 }
 
@@ -351,9 +321,9 @@ impl App {
                 self.input_compile_error = None;
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
-                        match vm::compile(&self.path, &parsed) {
+                        match compiler::compile(&self.path, &parsed) {
                             Ok(_) => (),
-                            Err(vm::CompileError::CommandNotFound(lc, _)) => {
+                            Err(compiler::CompileError::CommandNotFound(lc, _)) => {
                                 self.input_compile_error = Some(lc);
                             }
                         }
@@ -364,7 +334,7 @@ impl App {
             Message::Run => {
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
-                        let program = match vm::compile(&self.path, &parsed) {
+                        let program = match compiler::compile(&self.path, &parsed) {
                             Ok(p) => p,
                             Err(_) => return Task::none(),
                         };
@@ -632,13 +602,19 @@ impl App {
 
     fn view(&self) -> Elem<'_> {
         let exit_reason: fn(_) -> _ = |reason| {
-            match reason {
-                None => text("Running"),
-                Some(ExitReason::Normal(code)) => text(code.to_string()),
-                Some(ExitReason::Signal { signal, .. }) => text(utils::signal_to_string(signal)),
-                Some(ExitReason::Unknown { sigval: Some(s), .. }) => text(format!("Signal({s})")),
-                Some(ExitReason::Unknown { sigval: None, .. }) => text("Exited (unknown)"),
-            }
+            let cored = match reason {
+                Some(ExitReason::Signal { cored: true, .. })
+                | Some(ExitReason::Unknown { cored: true, .. }) => true,
+                _ => false,
+            };
+            let reason = match reason {
+                None => "Running".to_string(),
+                Some(ExitReason::Normal(code)) => code.to_string(),
+                Some(ExitReason::Signal { signal, .. }) => utils::signal_to_string(signal).to_string(),
+                Some(ExitReason::Unknown { sigval: Some(s), .. }) => format!("Signal({s})"),
+                Some(ExitReason::Unknown { sigval: None, .. }) => "Exited (unknown)".to_string(),
+            };
+            text(format!("{}{}", reason, if cored { " (cored)" } else { "" }))
         };
 
         fn listing_item_class(app: &App, d: &MyDirEntry) -> CS {

@@ -1130,9 +1130,8 @@ dependencies = [
  "inotify",
  "itertools",
  "libc",
+ "marish",
  "num-traits",
- "pest",
- "pest_derive",
  "raw-window-handle",
  "rustix 1.1.4",
  "rustix-openpty",
@@ -2224,6 +2223,27 @@ dependencies = [
  "float_next_after",
  "lyon_path",
  "num-traits",
+]
+
+[[package]]
+name = "marish"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "brandywine",
+ "chrono",
+ "futures",
+ "glob",
+ "itertools",
+ "libc",
+ "num-traits",
+ "pest",
+ "pest_derive",
+ "rustix 1.1.4",
+ "rustix-openpty",
+ "serde",
+ "tokio",
+ "unicode-segmentation",
 ]
 
 [[package]]
