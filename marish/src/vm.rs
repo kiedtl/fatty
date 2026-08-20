@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io::{Read, PipeReader};
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,17 +36,24 @@ pub enum RunPipelineItem {
 
 #[derive(Debug, Clone)]
 pub enum Instr {
+    EnterTest(String),
+    RecordTestSuccess,
+    Assert(LineCol),
+
     ChangeDir,
 
     /// Execute command in current context
     Run {
         command: Command2,
+        muffle: bool,
         // cond: RunCondition,
     },
 
     /// Execute pipeline in current context
     RunPipeline {
         items: Vec<RunPipelineItem>,
+        is_there_initial_value: bool,
+        muffle: bool,
         // cond: RunCondition,
     },
 
@@ -90,9 +98,27 @@ pub enum Instr {
     Return,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockId {
+    Entry,
+    TestsEntry,
+    Test { name: String },
+    Internal,
+}
+
 #[derive(Debug, Clone)]
 pub struct Block {
+    pub id: BlockId,
     pub contents: Vec<Instr>,
+}
+
+impl Block {
+    pub fn new_internal() -> Self {
+        Self {
+            id: BlockId::Internal,
+            contents: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -136,10 +162,9 @@ pub enum VMMessage {
     Job(Job),
 }
 
-#[derive(Clone)]
 pub enum WaitingOn {
-    Pid(Pid),
-    Builtin(Shared<BoxFuture<'static, ()>>),
+    Pid(Pid, Option<PipeReader>),
+    Builtin(Shared<BoxFuture<'static, ()>>, Option<PipeReader>),
 }
 
 #[derive(Clone)]
@@ -148,7 +173,7 @@ pub enum WaitingOn2 {
     Builtin(tokio::task::AbortHandle),
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct Scope {
     pub vars: HashMap<String, Value<'static>>,
     pub is_inherited: bool,
@@ -179,7 +204,16 @@ pub enum StackValue {
     VarRef(VarRef),
 }
 
+#[derive(Debug, Default)]
+pub struct TestCtx {
+    current_test: Option<String>,
+    successful: usize,
+    failed: usize,
+}
+
 pub struct VM {
+    pub test_ctx: TestCtx,
+
     pub fd3_slave: Option<Arc<OwnedFd>>,
     pub slave: Option<Arc<OwnedFd>>,
     pub program: Arc<Vec<Block>>,
@@ -227,10 +261,15 @@ impl VM {
                     break;
                 }
 
+                let mut reader = None;
                 match self.waiting_on.take() {
                     None => (),
-                    Some(WaitingOn::Builtin(jh)) => jh.await,
-                    Some(WaitingOn::Pid(pid)) => {
+                    Some(WaitingOn::Builtin(jh, maybe_reader)) => {
+                        reader = maybe_reader;
+                        jh.await;
+                    },
+                    Some(WaitingOn::Pid(pid, maybe_reader)) => {
+                        reader = maybe_reader;
                         match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
                             Ok(Some((_, status))) => {
                                 let reason = ExitReason::from(status);
@@ -248,6 +287,21 @@ impl VM {
                         }
                     }
                 }
+
+                if let Some(mut reader) = reader {
+                    let mut output = Vec::new();
+                    loop {
+                        let mut buf = [0u8; 8192];
+                        match reader.read(&mut buf) {
+                            Err(_) | Ok(0) => break,
+                            Ok(n) => output.extend_from_slice(&buf[..n]),
+                        }
+                    }
+
+                    let mut decoder = bwine::buffer_decoder(&output);
+                    let result = Value::read(&mut decoder).unwrap_or(Value::Undefined);
+                    self.push_value(result);
+                }
             }
         })
     }
@@ -264,6 +318,30 @@ impl VM {
         self.pc.1 = Some(instr_pc);
 
         match &self.program[self.pc.0].contents[instr_pc] {
+            Instr::EnterTest(s) => {
+                if self.test_ctx.current_test.is_some() {
+                    panic!("Already in test");
+                }
+                self.test_ctx.current_test = Some(s.clone());
+            },
+            Instr::RecordTestSuccess => {
+                println!("{: <50} \x1b[1;34mPASS\x1b[m", self.test_ctx.current_test.as_ref().unwrap());
+                self.test_ctx.current_test = None;
+                self.test_ctx.successful += 1;
+            },
+            Instr::Assert(lc) => {
+                let value = pop_value!(self);
+                if value != Value::Bool(true) {
+                    if let Some(curr) = &self.test_ctx.current_test {
+                        println!("{: <50} \x1b[1;31mFAIL\x1b[m", curr);
+                        self.test_ctx.current_test = None;
+                        self.ret().await;
+                        self.test_ctx.failed += 1;
+                    } else {
+                        panic!("Assertion failed {lc:?} ({value:?})");
+                    }
+                }
+            },
             Instr::ChangeDir => {
                 let path = pop_value!(self).to_string();
                 if let Err(_e) = std::env::set_current_dir(&path) {
@@ -274,29 +352,43 @@ impl VM {
                     sender.send(VMMessage::ChangedDir).await.unwrap();
                 }
             }
-            Instr::Run { command } => {
-                let args = (0..command.argc)
+            Instr::Run { muffle, command } => {
+                let Some(args) = (0..command.argc)
                     .map(|_| pop_value!(self))
-                    .map(|v| v.to_string())
-                    .collect::<Vec<_>>();
+                    .map(|v| v.os_string())
+                    .collect::<Option<Vec<OsString>>>()
+                    else {
+                        panic!("One of the arguments cannot be turned into a string");
+                    };
+
+                let mut muffle_reader = None;
+                let mut keep: Option<OwnedFd> = None;
 
                 let mut pcmd = std::process::Command::new(&command.path);
                 pcmd.envs(&*self.env);
                 pcmd.args(args);
-                if let Some(slave) = &self.slave {
+
+                if !muffle && let Some(fd3_slave) = &self.fd3_slave {
+                    add_stdobjout(&mut pcmd, fd3_slave.as_fd());
+                }
+
+                if *muffle {
+                    let (fr, fw) = std::io::pipe().unwrap();
+                    muffle_reader = Some(fr);
+                    add_stdobjout(&mut pcmd, fw.as_fd());
+                    keep = Some(fw.into()); // Keep alive in memory until after spawn() is called
+                } else if let Some(slave) = &self.slave {
                     let slave = slave.as_fd();
                     pcmd.stdin(rustix::io::dup(slave).unwrap());
                     pcmd.stdout(rustix::io::dup(slave).unwrap());
                     pcmd.stderr(rustix::io::dup(slave).unwrap());
                     add_terminal_controller(&mut pcmd, slave);
                 }
-                if let Some(fd3_slave) = &self.fd3_slave {
-                    add_stdobjout(&mut pcmd, fd3_slave.as_fd());
-                }
 
                 let child = pcmd.spawn().unwrap();
+                std::mem::drop(keep);
 
-                let on = WaitingOn::Pid(Pid::from_child(&child));
+                let on = WaitingOn::Pid(Pid::from_child(&child), muffle_reader);
                 self.waiting_on = Some(on);
 
                 if let Some(sender) = &self.msg_tx {
@@ -312,7 +404,7 @@ impl VM {
                     }).unwrap();
                 }
             },
-            Instr::RunPipeline { items } => {
+            Instr::RunPipeline { muffle, items, is_there_initial_value } => {
                 let mut reader;
                 let mut next_reader = None;
                 let mut writer = None;
@@ -323,8 +415,18 @@ impl VM {
 
                 let mut last_one = None;
 
+                if *is_there_initial_value {
+                    let (fr_obj, fw_obj) = std::io::pipe().unwrap();
+                    next_reader_obj = Some(fr_obj);
+                    let v = pop_value!(self);
+                    let mut wr = bwine::generic_writer(&fw_obj);
+                    v.write(&mut wr).unwrap();
+                }
+
                 for (i, item) in items.iter().enumerate() {
+                    // Keep holds fds until Command::spawn() is called
                     let mut keep = Vec::<OwnedFd>::new();
+
                     reader = next_reader;
                     next_reader = None;
 
@@ -339,6 +441,14 @@ impl VM {
                         let (fr_obj, fw_obj) = std::io::pipe().unwrap();
                         next_reader_obj = Some(fr_obj);
                         writer_obj = Some(fw_obj);
+                    }
+
+                    let mut muffle_reader = None;
+                    if *muffle && i == items.len() - 1 {
+                        let (fr, fw) = std::io::pipe().unwrap();
+                        muffle_reader = Some(fr);
+                        assert!(writer_obj.is_none());
+                        writer_obj = Some(fw);
                     }
 
                     match item {
@@ -360,6 +470,7 @@ impl VM {
                                 scope.is_inherited = true;
                             }
                             let mut vm = VM {
+                                test_ctx: Default::default(),
                                 fd3_slave: self.fd3_slave.clone(),
                                 slave: self.slave.clone(),
                                 env: self.env.clone(),
@@ -379,13 +490,16 @@ impl VM {
                             });
                             let ah = jh.abort_handle();
                             let shjh = async move { jh.await.unwrap(); }.boxed().shared();
-                            last_one = Some((WaitingOn::Builtin(shjh), WaitingOn2::Builtin(ah)));
+                            last_one = Some((WaitingOn::Builtin(shjh, muffle_reader), WaitingOn2::Builtin(ah)));
                         },
                         RunPipelineItem::Command(command) => {
-                            let args = (0..command.argc)
+                            let Some(args) = (0..command.argc)
                                 .map(|_| pop_value!(self))
-                                .map(|v| v.to_string())
-                                .collect::<Vec<_>>();
+                                .map(|v| v.os_string())
+                                .collect::<Option<Vec<_>>>()
+                                else {
+                                    panic!("One of the arguments cannot be turned into a string");
+                                };
 
                             let mut command = std::process::Command::new(&command.path);
                             command.envs(&*self.env);
@@ -423,7 +537,7 @@ impl VM {
 
                             let child = command.spawn().unwrap();
                             last_one = Some((
-                                    WaitingOn::Pid(Pid::from_child(&child)),
+                                    WaitingOn::Pid(Pid::from_child(&child), muffle_reader),
                                     WaitingOn2::Pid(Pid::from_child(&child))
                             ));
                             std::mem::drop(keep);
@@ -456,6 +570,7 @@ impl VM {
                 }
                 tokio::spawn(async move {
                     let mut vm = VM {
+                        test_ctx: Default::default(),
                         fd3_slave: None,
                         slave: None,
                         env,
@@ -511,18 +626,19 @@ impl VM {
                 for _ in 0..*n {
                     accm.push(pop_value!(self));
                 }
-                self.push_value(Value::Array(accm));
+                self.push_value(Value::Array(accm.into()));
             },
             Instr::CollectTable(n) => {
                 let mut rows = Vec::new();
                 for _ in 0..*n {
                     let Value::Array(row) = pop_value!(self)
                         else { unreachable!() };
-                    rows.push(row);
+                    rows.push(row.into());
                 }
 
                 let Value::Array(header) = pop_value!(self)
                     else { unreachable!() };
+                let header = header.into();
 
                 self.push_value(Value::Table { header, rows });
             },
@@ -534,14 +650,17 @@ impl VM {
                         Field::Column(key) => {
                             match value {
                                 Value::Table { header, rows } => {
-                                    let Some(i) = header.iter().position(|c| *c == key) else {
-                                        panic!("No such column {key:?} on table({header:?}).");
-                                    };
-                                    value = if rows.len() == 1 {
-                                        rows[0][i].clone()
+                                    if let Some(i) = header.iter().position(|c| *c == key) {
+                                        value = Value::Array(
+                                            rows.into_iter()
+                                                .map(|mut r| r.remove(i))
+                                                .collect::<Vec<_>>()
+                                                .into()
+                                        );
                                     } else {
-                                        Value::Array(rows.into_iter().map(|mut r| r.remove(i)).collect())
-                                    };
+                                        //panic!("No such column {key:?} on table({header:?}).");
+                                        value = Value::Array((&[Value::Null]).into());
+                                    }
                                 }
                                 _ => panic!("invalid target for column index: {value:?}"),
                             }
@@ -557,8 +676,10 @@ impl VM {
                                 c => panic!("index must be an integer, got {c:?}"),
                             };
                             value = match value {
-                                Value::Array(arr) => arr.get(i).expect("out of bounds").clone(),
-                                Value::Table { rows, .. } => Value::Array(rows.get(i).expect("out of bounds").clone()),
+                                Value::Array(arr) => arr.get(i).unwrap_or(&Value::Null).clone(),
+                                Value::Table { rows, .. } => rows.get(i)
+                                    .map(|i| Value::Array(i.clone().into()))
+                                    .unwrap_or(Value::Null),
                                 _ => panic!("invalid target for row index: {value:?}"),
                             };
                         }
@@ -651,40 +772,52 @@ impl VM {
                 self.push_value(result);
             }
             Instr::Negate => {
-                todo!()
+                let res = !pop_value!(self).truthy();
+                self.push_value(Value::Bool(res));
             }
             Instr::Pop => {
                 _ = self.stack.pop();
             }
             Instr::Return => {
-                if let Some(newpc) = self.rstack.pop() {
-                    self.pc = newpc;
-                    self.scope.pop().unwrap();
-                } else {
-                    self.done = true;
-                    assert!(self.scope.len() == 1);
-                    if let Some(sender) = &self.msg_tx {
-                        sender.send(VMMessage::Done {
-                            stack: std::mem::take(&mut self.stack),
-                            last_exit_reason: self.child_exit_stack.pop(),
-                            vars: self.scope.last().unwrap().vars.clone(),
-                        }).await.unwrap();
-                    }
-                    if let Some(sender) = &self.status {
-                        sender.send_modify(move |previous| {
-                            match std::mem::take(previous) {
-                                VMStatus::Done { command, reason } => *previous = VMStatus::Resolved { command: Some(command), reason: Some(reason) },
-                                VMStatus::None => *previous = VMStatus::Resolved { command: None, reason: None },
-                                _ => unreachable!(),
-                            }
-                        });
-                    }
-                }
+                self.ret().await;
             },
         }
     }
 
-    pub fn get_var(&self, s: &str) -> Option<&Value<'static>> {
+    async fn ret(&mut self) {
+        if let Some(newpc) = self.rstack.pop() {
+            self.pc = newpc;
+            self.scope.pop().unwrap();
+        } else {
+            self.done = true;
+            assert!(self.scope.len() >= 1);
+            if let Some(sender) = &self.msg_tx {
+                sender.send(VMMessage::Done {
+                    stack: std::mem::take(&mut self.stack),
+                    last_exit_reason: self.child_exit_stack.pop(),
+                    vars: self.scope.last().unwrap().vars.clone(),
+                }).await.unwrap();
+            }
+            if let Some(sender) = &self.status {
+                sender.send_modify(move |previous| {
+                    match std::mem::take(previous) {
+                        VMStatus::Done { command, reason } => *previous = VMStatus::Resolved { command: Some(command), reason: Some(reason) },
+                        VMStatus::None => *previous = VMStatus::Resolved { command: None, reason: None },
+                        _ => unreachable!(),
+                    }
+                });
+            }
+        }
+    }
+
+    fn get_var(&self, s: &str) -> Option<&Value<'static>> {
+        match s {
+            "t" => return Some(&Value::Bool(true)),
+            "f" => return Some(&Value::Bool(false)),
+            "nil" => return Some(&Value::Null),
+            "undef" => return Some(&Value::Undefined),
+            _ => (),
+        }
         for scope in self.scope.iter().rev() {
             if let Some(value) = scope.vars.get(s) {
                 return Some(value);
@@ -708,18 +841,18 @@ enum N<'a, 'v> {
     }
 }
 
-fn setv<'a>(mut fields: &[Field], lhs: N<'a, '_>, rhs: Value<'static>) {
+fn setv<'a>(mut fields: &[Field], lhs: N<'a, 'static>, rhs: Value<'static>) {
     // Get the latest field and take a look at it, UNLESS fields is empty, in which case
     // split_off_first returns None and we set the variable
     let Some(field) = fields.split_off_first() else {
         match (lhs, rhs) {
-            (N::V(v), rhs) => *v = rhs,
+            (N::V(v), rhs) => *v = rhs.clone(),
             (N::A(arr), Value::Array(rhs)) => {
                 if arr.len() != rhs.len() {
                     panic!("setv(N::A): rhs len doesn't match: {} vs lhs' {}", rhs.len(), arr.len());
                 }
                 for (lhs, rhs) in arr.iter_mut().zip(rhs.into_iter()) {
-                    *lhs = rhs;
+                    *lhs = rhs.clone();
                 }
             }
             (N::A(_), rhs) => panic!("setv(N::A): rhs is wrong shape ({:?})", rhs),
@@ -746,11 +879,7 @@ fn setv<'a>(mut fields: &[Field], lhs: N<'a, '_>, rhs: Value<'static>) {
                     let Some(col) = header.iter().position(|c| c == key) else {
                         panic!("No such column {key:?} on table({header:?}).");
                     };
-                    if rows.len() == 1 {
-                        setv(fields, N::V(&mut rows[0][col]), rhs);
-                    } else {
-                        setv(fields, N::C { col, rows }, rhs);
-                    }
+                    setv(fields, N::C { col, rows }, rhs);
                 }
                 _ => panic!("invalid target for column index: {lhs:?}"),
             }
@@ -766,7 +895,7 @@ fn setv<'a>(mut fields: &[Field], lhs: N<'a, '_>, rhs: Value<'static>) {
                 _ => panic!("index must be an integer"),
             };
             match lhs {
-                N::V(Value::Array(arr)) => setv(fields, N::V(&mut arr[i]), rhs),
+                N::V(Value::Array(arr)) => setv(fields, N::V(&mut arr.to_mut()[i]), rhs),
                 N::V(Value::Table { header, rows }) => setv(fields, N::T { header, row: &mut rows[i] }, rhs),
                 N::A(arr) => setv(fields, N::V(&mut arr[i]), rhs),
                 N::C { col, rows } => setv(fields, N::V(&mut rows[i][col]), rhs),
@@ -779,15 +908,18 @@ fn setv<'a>(mut fields: &[Field], lhs: N<'a, '_>, rhs: Value<'static>) {
 #[allow(dead_code)]
 pub fn print_program(p: &[Block]) {
     for (blocki, block) in p.iter().enumerate() {
-        println!("Block {blocki}:");
+        println!("Block {blocki}-{:?}:", block.id);
         for instr in &block.contents {
             match instr {
+                Instr::EnterTest(name) => println!("  - enter_test {name}"),
+                Instr::RecordTestSuccess => println!("  - record_test_success"),
+                Instr::Assert(_) => println!("  - assert"),
                 Instr::ChangeDir => println!("  - cd"),
-                Instr::Run { command: Command2 { path, argc, .. } }
-                    => println!("  - run {} ({argc} args)", path.display()),
-                Instr::RunPipeline { items }
+                Instr::Run { command: Command2 { path, argc, .. }, muffle }
+                    => println!("  - run muffle={muffle} {} ({argc} args)", path.display()),
+                Instr::RunPipeline { items, muffle, is_there_initial_value }
                     => {
-                        println!("  - create_pipe");
+                        println!("  - create_pipe muffle={muffle} iv={is_there_initial_value}");
                         for item in items {
                             match item {
                                 RunPipelineItem::Command(c) => println!("  - run {}: ({} args)", c.path.display(), c.argc),
@@ -908,15 +1040,18 @@ mod builtin {
         let mut ast = Vec::new();
         let mut consumed = 0;
 
-        #[derive(Debug)]
-        enum S { V, H, PT(Vec<Value<'static>>), PA }
-        let mut s = S::V;
-        let mut ai = 0;
-
         let mut writer = bwine::minicbor::encode::Encoder::new(
             bwine::minicbor::encode::write::Writer::new(writer)
         );
-        let mut stt = bwine::stream_table_no_headers(&mut writer).unwrap();
+
+        enum S<'a, W: bwine::minicbor::encode::Write> {
+            V,
+            H,
+            PT(Vec<Value<'static>>, bwine::StreamingTable<'a, W>),
+            PA(bwine::StreamingArray<'a, W>),
+        }
+        let mut s = S::V;
+        let mut ai = 0;
 
         while !sr.is_done() {
             let mut tmp = [0u8; 1024];
@@ -937,11 +1072,14 @@ mod builtin {
                 }
 
                 if ai < ast.len() {
-                    match &s {
+                    match &mut s {
                         S::V => {
                             match &ast[ai] {
                                 Token::Table => s = S::H,
-                                Token::Array(_) => s = S::PA,
+                                Token::Array(_) => {
+                                    std::mem::drop(s);
+                                    s = S::PA(bwine::stream_array(&mut writer, None).unwrap());
+                                },
                                 _ => {
                                     //outln!("Expected table or array.");
                                     return Ok(());
@@ -954,11 +1092,13 @@ mod builtin {
                                 && let Some((ns, Value::Array(harr))) = Token::collect(&ast[ai..])
                             {
                                 ai += ns + 1; // Skip next Token::Array that begins rows.
-                                s = S::PT(harr.clone());
-                                stt.headers(harr).unwrap();
+                                let harr = harr.into_owned();
+                                std::mem::drop(s);
+                                let stt = bwine::stream_table(&mut writer, harr.clone()).unwrap();
+                                s = S::PT(harr.clone(), stt);
                             }
                         }
-                        S::PT(headers) => {
+                        S::PT(headers, stt) => {
                             if let Token::Array(_) = &ast[ai]
                                 && let Some((ns, Value::Array(row))) = Token::collect(&ast[ai..])
                             {
@@ -969,18 +1109,34 @@ mod builtin {
                                     is_inherited: false,
                                     vars: [("_".to_owned(), Value::Table {
                                         header: headers.clone(),
-                                        rows: vec![row.clone()]
+                                        rows: vec![row.clone().into_owned()]
                                     })].into_iter().collect(),
                                 });
                                 vm.execute().await;
                                 if pop_value!(vm) == Value::Bool(true) {
-                                    stt.row(row).unwrap();
+                                    stt.row(row.into_owned()).unwrap();
                                 }
 
                                 ai += ns;
                             }
                         },
-                        S::PA => todo!(),
+                        S::PA(sta) => {
+                            if let Some((ns, value)) = Token::collect(&ast[ai..]) {
+                                vm.done = false;
+                                vm.stack.clear();
+                                vm.pc = (block, None);
+                                vm.scope.push(Scope {
+                                    is_inherited: false,
+                                    vars: [("_".to_owned(), value.clone())].into_iter().collect(),
+                                });
+                                vm.execute().await;
+                                if pop_value!(vm) == Value::Bool(true) {
+                                    sta.item(value).unwrap();
+                                }
+
+                                ai += ns;
+                            }
+                        },
                     }
                 }
             }
@@ -989,7 +1145,11 @@ mod builtin {
             consumed = 0;
         }
 
-        stt.end();
+        match s {
+            S::V | S::H => todo!(), // TODO: handle partial data
+            S::PT(_, stt) => stt.end()?,
+            S::PA(sta) => sta.end()?,
+        }
 
         Ok(())
     }

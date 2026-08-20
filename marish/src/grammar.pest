@@ -1,21 +1,25 @@
+COMMENT       = _{ "#" ~ (!"\n" ~ ANY)* }
 WHITESPACE    = _{ " " | "\t" }
+NL            = _{ "\n"* }
 
-program       =  { SOI ~ stmt+ ~ EOI }
-stmt          =  { (assignment | background | chain | pipeline | b_expr | sub | command) ~ "\n"* }
+program       =  { SOI ~ NL ~ (decl | stmt) ~ (("\n"* ~ decl | "\n"+ ~ stmt))* ~ NL ~ EOI }
+stmts         = _{ stmt ~ ("\n"+ ~ stmt)* }
+stmt          =  { (assignment | background | chain | pipeline | b_expr | sub | special | literal | command | token) }
 background    =  { (chain | pipeline | sub | command) ~ "&" }
-chain         =  { (pipeline | b_expr | sub | command) ~ (connector ~ (pipeline | b_expr | sub | command))+ }
-pipeline      =  { (sub | special | command | special) ~ ("|" ~ (sub | special | command | special))+ }
-sub           =  { "(" ~ stmt+ ~ ")" }
+chain         =  { (pipeline | b_expr | sub | special | command) ~ (connector ~ (pipeline | b_expr | sub | special | command))+ }
+pipeline      =  { (literal | sub | special | command | token) ~ ("|" ~ (sub | special | command))+ }
+sub           =  { "(" ~ NL ~ stmts ~ NL ~ ")" }
 command       =  { unquoted ~ single* }
-assignment    =  { var ~ "=" ~ (token | stmt) }
+assignment    =  { var ~ "=" ~ (stmt | token) }
 
 connector     =  { "&&" | "||" }
 
-special       = _{ s_where }
-s_where       =  { "where" ~ stmt+ }
-//until       =  { "until" ~ stmt+ }
-//break       =  { "break" }
-//continue    =  { "continue" }
+special       = _{ s_where | s_assert }
+s_where       =  { "where" ~ stmt }
+s_assert      =  { "assert" ~ stmt }
+
+decl          = _{ test_decl ~ NL }
+test_decl     =  { "test" ~ (unquoted | single_quoted | double_quoted) ~ sub }
 
 b_expr        = {
       prefix+ ~ atom ~ (infix ~ prefix* ~ atom)*
@@ -48,7 +52,6 @@ field_index   =  { "[" ~ stmt ~ "]" }
 
 table         =  { "[" ~ NEWLINE* ~ header_row ~ NEWLINE* ~ ";" ~ NEWLINE* ~ (row ~ NEWLINE*)* ~ "]" }
 header_row    =  { "[" ~ single+ ~ "]" }
-col_name      = @{ (ASCII_ALPHANUMERIC | "_")+ }
 row           =  { "[" ~ single+ ~ "]" }
 array         =  { "[" ~ single* ~ "]" }
 
@@ -61,7 +64,7 @@ integer       = @{ ('0'..'9')+ }
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 double_quoted = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
 unquoted      = @{
-    ( !("$" | " " | "\t" | "\n" | "'" | "\"" | "\\" | "|" | "&" | "(" | ")" | "[" | "]") ~ ANY
+    ( !("$" | " " | "\t" | "\n" | "'" | "\"" | "\\" | "|" | "&" | "(" | ")" | "[" | "]" | ";") ~ ANY
     | "\\" ~ ANY
     )+
 }

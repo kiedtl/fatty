@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, BufWriter};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -126,7 +126,7 @@ impl<'a> Token<'a> {
                     }
                 }
                 i += 1; // Move past end
-                (i, Value::Array(v))
+                (i, Value::Array(v.into()))
             }
             Token::Map(_) => todo!(),
 
@@ -144,10 +144,10 @@ impl<'a> Token<'a> {
                     else { return None }; // TODO: error
                 i += ns;
                 let rows = rw.into_iter().map(|v| match v {
-                    Value::Array(row) => row,
+                    Value::Array(row) => row.clone().into_owned(),
                     _ => todo!(), // TODO: error
                 }).collect();
-                (i, Value::Table { header: he, rows })
+                (i, Value::Table { header: he.into_owned(), rows })
             },
 
             Token::Timestamp => {
@@ -222,6 +222,7 @@ pub enum Expecting {
     Bytes(usize, Option<u64>),
 }
 
+#[derive(Debug)]
 pub struct StreamingReader {
     pub stack: Vec<Expecting>,
 }
@@ -492,7 +493,7 @@ pub enum Value<'a> {
     // type 3: UTF-8
     Text(Cow<'static, str>),
     // type 4
-    Array(Vec<Value<'a>>),
+    Array(Cow<'a, [Value<'a>]>),
     // type 5: ordered pairs
     Map(Vec<(Value<'a>, Value<'a>)>),
     // type 6: semantic annotation on one item
@@ -550,6 +551,44 @@ impl<T: chrono::TimeZone> From<chrono::DateTime<T>> for Value<'static> {
 //     }
 // }
 
+impl Value<'_> {
+    pub fn truthy(&self) -> bool {
+        match self {
+            Value::Path(p) => !p.as_os_str().is_empty(),
+            Value::Text(s) => !s.is_empty(),
+            Value::Int(x) => *x != 0,
+            Value::Float(x) => *x != 0.,
+            Value::Bool(x) => *x,
+            Value::Simple(x) => *x != 0,
+            Value::Bytes(b) => !b.is_empty(),
+            Value::Timestamp(_) => true,
+            Value::Table { rows, .. } => !rows.is_empty(),
+            Value::Null | Value::Undefined => false,
+            Value::Array(a) => !a.is_empty(),
+            Value::Map(_) => todo!(),
+            Value::Tag(_, v) => v.truthy(),
+        }
+    }
+
+    pub fn os_string(&self) -> Option<OsString> {
+        Some(match self {
+            Value::Path(p) => p.as_os_str().to_owned(),
+            Value::Text(s) => OsString::from(s.as_ref()),
+            Value::Int(x) => OsString::from(x.to_string()),
+            Value::Float(x) => OsString::from(x.to_string()),
+            Value::Bool(x) => OsString::from(x.to_string()),
+            Value::Simple(x) => OsString::from_vec(vec![*x]),
+            Value::Bytes(b) => OsString::from_vec(b.clone().into_owned()),
+            Value::Timestamp(t) => OsString::from(t.to_string()),
+            Value::Table { .. } => return None,
+            Value::Null => return None,
+            Value::Undefined => return None,
+            Value::Array(_) => return None,
+            Value::Map(_) => return None,
+            Value::Tag(_, _) => return None,
+        })
+    }
+}
 
 impl<'b> decode::Decode<'b, ()> for Value<'static> {
     fn decode(d: &mut Decoder<'b>, _ctx: &mut ()) -> Result<Value<'static>, decode::Error> {
@@ -602,7 +641,7 @@ impl<'b> decode::Decode<'b, ()> for Value<'static> {
                     items.push(Self::read(d)?);
                     Ok(())
                 })?;
-                Ok(Value::Array(items))
+                Ok(Value::Array(items.into()))
             }
             Type::Map | Type::MapIndef => {
                 let n = d.map()?;
@@ -623,16 +662,20 @@ impl<'b> decode::Decode<'b, ()> for Value<'static> {
                     },
                     TABLE_TAG => {
                         let Value::Array(header) = Value::read(d)? else { todo!() };
+                        let header = header.into();
+
                         let mut rows = Vec::new();
                         let n = d.array()?;
                         read_seq(d, n, |d| {
                             let row = match Value::read(d)? {
-                                Value::Array(row) => row,
+                                Value::Array(row) => row.into_owned(),
                                 c => panic!("Expected array, got {c:?}"),
                             };
                             rows.push(row);
                             Ok(())
                         })?;
+                        let rows = rows.into();
+
                         Ok(Value::Table { header, rows })
                     },
                     tag => {
@@ -707,7 +750,7 @@ impl<'a> Value<'a> {
             Value::Text(s)  => _ = e.str(&*s)?,
             Value::Array(items) => {
                 e.array(items.len() as u64)?;
-                for it in items {
+                for it in items.as_ref() {
                     it.write(e)?;
                 }
             }
@@ -769,7 +812,6 @@ impl<'a> Value<'a> {
 }
 
 fn fd4_fd() -> Option<BorrowedFd<'static>> {
-
     // SAFETY: we assert that the FD is open right afterwards.
     if rustix::fs::fcntl_getfl(unsafe { BorrowedFd::borrow_raw(4) }).is_ok() {
         static STDBININ: LazyLock<OwnedFd> = LazyLock::new(|| unsafe { OwnedFd::from_raw_fd(4) });
@@ -842,6 +884,53 @@ pub fn stdout_writer() -> Option<StdoutEncoder> {
     Some(StdoutEncoder(encode::Encoder::new(writer)))
 }
 
+pub fn generic_writer<T: std::io::Write>(t: T) -> encode::Encoder<encode::write::Writer<T>> {
+    let writer = encode::write::Writer::new(t);
+    encode::Encoder::new(writer)
+}
+
+pub struct StreamingArray<'a, W: encode::Write> {
+    e: &'a mut Encoder<W>,
+    is_begun: bool,
+    known_size: Option<usize>,
+}
+
+impl<'a, W: encode::Write> StreamingArray<'a, W> {
+    pub fn item<'v>(&mut self, item: impl Into<Value<'v>>) -> Result<(), encode::Error<W::Error>> {
+        if !self.is_begun {
+            self.is_begun = true;
+            if let Some(known_size) = self.known_size {
+                self.e.array(known_size as u64)?;
+            } else {
+                self.e.begin_array()?;
+            }
+        }
+        item.into().write(self.e)?;
+        Ok(())
+    }
+
+    pub fn end(self) -> Result<(), encode::Error<W::Error>> {
+        // End array
+        if self.known_size.is_none() {
+            self.e.end()?;
+        }
+        _ = self;
+        Ok(())
+    }
+}
+
+impl<W: encode::Write> Drop for StreamingArray<'_, W> {
+    fn drop(&mut self) {
+        _ = self.e.end();
+    }
+}
+
+pub fn stream_array<'a, W: encode::Write>(e: &'a mut Encoder<W>, known_size: Option<usize>)
+    -> Result<StreamingArray<'a, W>, encode::Error<W::Error>>
+{
+    Ok(StreamingArray { e, known_size, is_begun: false })
+}
+
 pub struct StreamingTable<'a, W: encode::Write> {
     e: &'a mut Encoder<W>,
     width: Option<usize>, // None if not known yet (i.e. headers not yet provided)
@@ -854,6 +943,7 @@ impl<'a, W: encode::Write> StreamingTable<'a, W> {
         T: Into<Value<'v>>,
     {
         assert!(self.width.is_none());
+        self.e.tag(Tag::new(TABLE_TAG))?;
 
         let header: Vec<_> = headers.into_iter().map(|i| i.into()).collect();
         let width = header.len();
@@ -884,8 +974,17 @@ impl<'a, W: encode::Write> StreamingTable<'a, W> {
         Ok(())
     }
 
-    pub fn end(self) {
+    pub fn end(mut self) -> Result<(), encode::Error<W::Error>> {
+        // Handle zero-size table with no headers or rows
+        if self.width.is_none() {
+            self.headers::<usize, _>([])?;
+        }
+
+        // End row array
+        self.e.end()?;
+
         _ = self;
+        Ok(())
     }
 }
 
@@ -898,7 +997,6 @@ impl<W: encode::Write> Drop for StreamingTable<'_, W> {
 pub fn stream_table_no_headers<'a, 'v, W: encode::Write>(e: &'a mut Encoder<W>)
     -> Result<StreamingTable<'a, W>, encode::Error<W::Error>>
 {
-    e.tag(Tag::new(TABLE_TAG))?;
     Ok(StreamingTable { e, width: None })
 }
 
@@ -908,7 +1006,6 @@ where
     I: IntoIterator<Item = T>,
     T: Into<Value<'v>>,
 {
-    e.tag(Tag::new(TABLE_TAG))?;
     let mut stt = StreamingTable { e, width: None };
     stt.headers(headers)?;
     Ok(stt)

@@ -26,21 +26,39 @@ Shell
 - builtin: select
   x basic
   - Exclusion mode flag -e
-- builtin: where filter
-  x basic
-  - datetime comparisons, i.e. $date -gt @ts(2026-03-01)
-- builtin(?): sort-by
-  - ascending/descending
+x builtin: where filter
 x index array/table with arbitrary expressions
-- variable assignments
-- assertions
-- tests
+x variable assignments
+  x array literals
+  x table literals
+  - datetime literals
+    - datetime comparisons
+x assertions
+x tests
+x literals for true, false, nil, undefined
+- set variables to output of command
+  x object output
+  - stdout
+x expressions in commands
+- combination <> operator
 - environment variables
   - $env variables
   - set for command
 
+Assign new syntax
+- command!
+- @command
+
+Various builtins/tools
+- format (format date, time, duration, size, ...)
+- parse (parse date, time, duration, integer, float, size, ip address, file mode)
+- sort-by (ascending, descending)
+
 QoL
 - Put large tables in scrollbar
+- Show command invocation in UI
+  - Marish: track LineCol for commands
+  - Show both user input and what was actually run
 
 Crickhollow (re)implementations
 - document output

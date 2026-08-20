@@ -1,0 +1,178 @@
+test "int/float/nil/undef literal equals itself" (
+    assert (3 -eq 3)
+    assert (3.4 -eq 3.4)
+    assert ($nil -ne $undef)
+    assert ($nil -eq $nil)
+    assert ($undef -eq $undef)
+)
+
+test "boolean literals" (
+    assert $t
+    assert -not $f
+)
+
+test "nil and undef are distinct" (
+    assert $nil -ne $undef
+)
+
+test "array literal indexing" (
+    $var = [1 2 3]
+    assert $var[0] -eq 1
+    assert $var[1] -eq 2
+    assert $var[2] -eq 3
+)
+
+test "nested array literal indexing" (
+    $var = [1 2 3 [4 5 6]]
+    assert $var[3][0] -eq 4
+    assert $var[3][1] -eq 5
+    assert $var[3][2] -eq 6
+)
+
+test "array reassignment" (
+    $var = [1 2 3]
+    $var = [4 5 6]
+    assert $var[0] -eq 4
+)
+
+test "table literal column indexing by field syntax" (
+    $var = [[a b c]; [1 2 3] [2 3 4]]
+    assert $var.a[0] -eq 1
+    assert $var.a[1] -eq 2
+    assert $var.c[0] -eq 3
+)
+
+test "table literal column indexing by bracket syntax" (
+    $var = [[a b c]; [1 2 3] [2 3 4]]
+    assert $var.["b"][0] -eq 2
+    assert $var.["b"][1] -eq 3
+)
+
+test "field and bracket syntax agree" (
+    $var = [[a b c]; [1 2 3] [2 3 4]]
+    assert $var.a[0] -eq $var.["a"][0]
+    assert $var.b[1] -eq $var.["b"][1]
+)
+
+test "table with non-identifier column names" (
+    $var = [[1 2.5 "text"]; [10 20 30]]
+    assert $var.[1][0] -eq 10
+    assert $var.[2.5][0] -eq 20
+    assert $var.text[0] -eq 30
+    assert $var.text[0] -eq $var.["text"][0]
+)
+
+test "single row table is a record" (
+    $var = [[name age]; ["e" 30]]
+    assert $var.name[0] -eq "e"
+    assert $var.age[0] -eq 30
+)
+
+test "empty table has no rows" (
+    $var = [[a b c];]
+    assert $var.a[0] -eq $nil
+)
+
+test "unknown column returns nil" (
+    $var = [[a b c]; [1 2 3]]
+    assert $var.["z"][0] -eq $nil
+)
+
+test "out of bounds row index returns nil" (
+    $var = [[a b c]; [1 2 3]]
+    assert $var.a[99] -eq $nil
+)
+
+test "double quoted string processes escapes" (
+    $a = "test\x1bend"
+    $b = 'test\x1bend'
+    assert $a -ne $b
+)
+
+test "double quoted string does not expand globs" (
+    $a = "test*"
+    assert $a -eq "test*"
+)
+
+test "single quoted string does not expand globs" (
+    $a = 'test*'
+    assert $a -eq 'test*'
+)
+
+test "escape sequence set differs from literal" (
+    $escaped = "\a\b\r\n\t\0"
+    $literal = '\a\b\r\n\t\0'
+    assert $escaped -ne $literal
+)
+
+test "hex and octal escapes produce the same character" (
+    $hex = "\x1b"
+    $oct = "\o033"
+    assert $hex -eq $oct
+)
+
+test "comparison operators on integers" (
+    assert 3 -gt 2
+    assert 2 -lt 3
+    assert 3 -ge 3
+    assert 3 -le 3
+    assert 3 -eq 3
+    assert 3 -ne 2
+)
+
+test "logical and" (
+    assert $t -and $t
+    assert -not ($t -and $f)
+)
+
+test "logical or" (
+    assert $t -or $f
+    assert -not ($f -or $f)
+)
+
+test "logical xor" (
+    assert $t -xor $f
+    assert -not ($t -xor $t)
+    assert -not ($f -xor $f)
+)
+
+test "logical not" (
+    assert -not $f
+    assert -not (-not $t)
+)
+
+test "arithmetic operators" (
+    assert (2 + 3) -eq 5
+    assert (5 - 2) -eq 3
+    assert (4 * 3) -eq 12
+    assert (10 / 2) -eq 5
+)
+
+test "arithmetic operator precedence with parens" (
+    assert ((2 + 3) * 4) -eq 20
+    assert (2 + (3 * 4)) -eq 14
+)
+
+test "where filters an array keeping matches" (
+    $result = [1 2 3 4 5] | where $_ -gt 3
+    assert $result[0] -eq 4
+    assert $result[1] -eq 5
+)
+
+test "where on array excludes non-matches" (
+    $result = [1 2 3 4 5] | where $_ -gt 3
+    assert $result[0] -ne 1
+)
+
+test "where filters a table by column predicate" (
+    $var = [[name size]; ["a" 100] ["b" 40000] ["c" 20000]]
+    $result = $var | where $_.size[0] -lt 35000
+    assert $result.name[0] -eq "a"
+    assert $result.name[1] -eq "c"
+)
+
+test "where passes matching table rows through unchanged" (
+    $var = [[name size]; ["a" 100]]
+    $result = $var | where $_.size[0] -lt 35000
+    assert $result.size[0] -eq $var.size[0]
+)

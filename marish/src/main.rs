@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -11,13 +12,16 @@ use marish::{
     ExitReason,
 };
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let mut stack_output = false;
+    let mut tests = false;
     let mut script_path: Option<PathBuf> = None;
 
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-s" | "--stack" => stack_output = true,
+            "-t" | "--tests" => tests = true,
             other => script_path = Some(PathBuf::from(other)),
         }
     }
@@ -50,7 +54,8 @@ fn main() -> ExitCode {
     let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
-    let env: HashMap<_, _> = std::env::vars_os().collect();
+    let mut env: HashMap<_, _> = std::env::vars_os().collect();
+    env.insert("FATTY".into(), "normal0".into());
 
     let program: Vec<_> = match compiler::compile(&path_dirs, &parsed) {
         Ok(p) => p,
@@ -60,8 +65,16 @@ fn main() -> ExitCode {
         }
     };
 
+    let (fd3_master, fd3_slave) = rustix::net::socketpair(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::STREAM,
+        rustix::net::SocketFlags::NONBLOCK,
+        None,
+    ).unwrap();
+
     let mut vm = vm::VM {
-        fd3_slave: None,
+        test_ctx: Default::default(),
+        fd3_slave: Some(std::sync::Arc::new(fd3_slave)),
         slave: None,
         program: Arc::new(program),
         pc: (0, None),
@@ -76,14 +89,43 @@ fn main() -> ExitCode {
         done: false,
     };
 
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("marish: tokio: {e}");
-            return ExitCode::FAILURE;
+    if tests {
+        vm.pc.0 = vm.program.len() - 1;
+        assert!(vm.program[vm.pc.0].id == vm::BlockId::TestsEntry);
+    }
+
+    //vm::print_program(&vm.program);
+    vm.execute().await;
+
+    let mut bwine_output = Vec::new();
+    let mut buf = [0u8; 8192];
+    let mut tries = 0;
+    loop {
+        match rustix::io::read(&fd3_master, &mut buf) {
+            Err(rustix::io::Errno::AGAIN) => {
+                tries += 1;
+                if tries > 10 {
+                    break;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+            Ok(n) => bwine_output.extend_from_slice(&buf[..n]),
+            Err(_) => break,
         }
-    };
-    rt.block_on(vm.execute());
+    }
+
+    if !bwine_output.is_empty() {
+        let mut decoder = bwine::buffer_decoder(&bwine_output);
+        let result = bwine::Value::read(&mut decoder).unwrap_or(bwine::Value::Undefined);
+        println!("bwine:\n");
+        if let Some(s) = result.os_string() {
+            std::io::stdout().write_all(s.as_bytes()).unwrap();
+        } else {
+            println!("{:?}", result);
+        }
+    }
+
 
     if stack_output && !vm.stack.is_empty() {
         eprintln!("-- final stack --");

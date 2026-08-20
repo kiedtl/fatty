@@ -14,7 +14,7 @@ pest_derive = "2.8.6"
 rustix-openpty = "0.2.0"
 rustix = { version = "1.1.4", features = ["net"] }
 serde = { version = "1.0.228", features = ["derive"] }
-tokio = { version = "1.51.0", features = ["rt", "rt-multi-thread", "sync"] }
+tokio = { version = "1.51.0", features = ["rt", "macros", "rt-multi-thread", "time", "sync"] }
 unicode-segmentation = "1.13.2"
 anyhow = "1.0.104"
 chrono = "0.4.45"

@@ -90,6 +90,7 @@ pub struct Command {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pipeline {
+    pub initial_value: Option<Token>,
     pub items: Vec<PipelineItem>,
 }
 
@@ -119,7 +120,22 @@ pub struct Assignment {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct TestDecl {
+    pub name: String,
+    pub body: Vec<Ast>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Assert {
+    pub lc: LineCol,
+    pub body: Box<Ast>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
+    Token(Token),
+    Assert(Assert),
+    TestDecl(TestDecl),
     Assignment(Assignment),
     Chain(Chain),
     Pipeline(Pipeline),
@@ -146,32 +162,70 @@ static PRATT: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
         .op(PrattOp::prefix(Rule::b_not_op)) // -not is tightest binding
 });
 
-fn unescape_dq(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            if let Some(next) = chars.next() {
-                out.push(next);
-            }
-        } else {
-            out.push(ch);
+fn escape(chars: &mut impl Iterator<Item = char>, out: &mut String) -> Option<()> {
+    let c = chars.next()?;
+
+    match c {
+        'r' => out.push('\r'),
+        'n' => out.push('\n'),
+        't' => out.push('\t'),
+        'a' => out.push('\x07'),
+        'b' => out.push('\x08'),
+        '0' => out.push('\0'),
+
+        'x' => {
+            let hi = chars.next()?.to_digit(16)?;
+            let lo = chars.next()?.to_digit(16)?;
+
+            let value = (hi << 4) | lo;
+            out.push(char::from_u32(value)?);
         }
+
+        'o' => {
+            let mut value = 0u32;
+
+            for _ in 0..3 {
+                let c = chars.next()?;
+                let digit = c.to_digit(8)?;
+
+                value = (value << 3) | digit;
+            }
+
+            out.push(char::from_u32(value)?);
+        }
+
+        _ => return None,
     }
-    out
+
+    Some(())
 }
 
-fn unescape_unquoted(s: &str) -> String {
+fn unescape_dq(s: &str) -> Result<String, String> {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(ch) = chars.next() {
         if ch == '\\' {
-            if let Some(next) = chars.next() { out.push(next); }
+            escape(&mut chars, &mut out)
+                .ok_or(format!("Escape sequence in string {s} not supported"))?;
         } else {
             out.push(ch);
         }
     }
-    out
+    Ok(out)
+}
+
+fn unescape_unquoted(s: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            escape(&mut chars, &mut out)
+                .ok_or(format!("Escape sequence in string {s} not supported"))?;
+        } else {
+            out.push(ch);
+        }
+    }
+    Ok(out)
 }
 
 fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
@@ -235,10 +289,10 @@ fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
             Token::Table(Table { header, rows })
         },
         Rule::single_quoted => Token::String(pair.as_str()[1..].strip_suffix('\'').unwrap().to_owned()),
-        Rule::double_quoted => Token::String(unescape_dq(pair.as_str()[1..].strip_suffix('"').unwrap())),
+        Rule::double_quoted => Token::String(unescape_dq(pair.as_str()[1..].strip_suffix('"').unwrap())?),
         Rule::integer => Token::Int(pair.as_str().parse::<i128>().unwrap()),
         Rule::float_lit => Token::Float(pair.as_str().parse::<f64>().unwrap()),
-        Rule::unquoted => Token::Word(unescape_unquoted(pair.as_str())),
+        Rule::unquoted => Token::Word(unescape_unquoted(pair.as_str())?),
         s => panic!("todo: {:?}", s),
     })
 }
@@ -288,6 +342,7 @@ fn str_to_op(s: &str) -> Operator {
 fn parse_single<'a>(pair: Pair<'a, Rule>) -> Result<Single, String> {
     Ok(match pair.as_rule() {
         Rule::sub => Single::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?)),
+        Rule::stmt => Single::Sub(Box::new(parse_ast(pair)?)),
         _ => Single::Token(parse_token(pair)?),
     })
 }
@@ -339,9 +394,16 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
         Rule::chain => todo!(),
         Rule::pipeline => {
             let mut items = Vec::new();
+            let mut initial_value = None;
 
             for pair in pair.into_inner() {
                 match parse_ast(pair)? {
+                    Ast::Stmt(_, Stmt::Token(c)) => {
+                        if items.len() != 0 {
+                            return Err(format!("Value in pipeline must be first item"));
+                        }
+                        initial_value = Some(c);
+                    },
                     Ast::Stmt(_, Stmt::Command(c)) => items.push(PipelineItem::Command(c)),
                     Ast::Stmt(_, Stmt::Sub(s)) => items.push(PipelineItem::Sub(s)),
                     Ast::Stmt(_, Stmt::Where(s)) => items.push(PipelineItem::Where(s)),
@@ -350,7 +412,7 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
                 }
             }
 
-            Ast::Stmt(lc, Stmt::Pipeline(Pipeline { items }))
+            Ast::Stmt(lc, Stmt::Pipeline(Pipeline { items, initial_value }))
         },
         // Rule::query => Ast::Stmt(lc, Stmt::Query(parse_query(pair.into_inner())?)),
         Rule::sub => Ast::Stmt(lc, Stmt::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?))),
@@ -366,15 +428,41 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
         Rule::assignment => {
             let mut inner = pair.into_inner();
             let Token::Var(lhs) = parse_token(inner.next().unwrap())? else { unreachable!() };
+            match lhs.name.as_str() {
+                "t" | "f" | "nil" | "undef" => return Err(format!("Reserved variable {} cannot be assigned to.", lhs.name)),
+                _ => (),
+            }
             let rhs = parse_single(inner.next().unwrap())?;
             Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs }))
         },
         Rule::b_expr => parse_bool_expr(pair.into_inner())?,
 
-        Rule::single_quoted => unreachable!(),
-        Rule::double_quoted => unreachable!(),
-        Rule::unquoted => unreachable!(),
+        Rule::test_decl => {
+            let mut inner = pair.into_inner();
+            let name = match parse_token(inner.next().unwrap())? {
+                Token::Word(w) => w,
+                Token::String(s) => s,
+                _ => unreachable!(), // Only un/single/double-quoted strings allowed by grammer
+            };
+            let body_pair = inner.next().unwrap().into_inner();
+            let body = parse_list(body_pair)?;
+            Ast::Stmt(lc, Stmt::TestDecl(TestDecl { name, body }))
+        },
+        Rule::s_assert => {
+            let body = Box::new(parse_ast(pair.into_inner().next().unwrap())?);
+            Ast::Stmt(lc, Stmt::Assert(Assert { body, lc }))
+        },
 
+        Rule::var
+        | Rule::array
+        | Rule::table
+        | Rule::single_quoted
+        | Rule::double_quoted
+        | Rule::integer
+        | Rule::float_lit
+        | Rule::unquoted => Ast::Stmt(lc, Stmt::Token(parse_token(pair)?)),
+
+        Rule::decl => unreachable!(),
         Rule::special => unreachable!(),
         Rule::token => unreachable!(),
         Rule::connector => unreachable!(),

@@ -378,6 +378,7 @@ impl App {
                         self.execs.push(ex);
 
                         let mut vm = vm::VM {
+                            test_ctx: Default::default(),
                             fd3_slave: Some(Arc::new(fd3_slave)),
                             slave: Some(Arc::new(self.slave.try_clone().unwrap())),
                             env: Arc::new(self.env.clone()),
@@ -729,7 +730,7 @@ impl App {
                             VMStatus::Waiting {
                                 item: vm::RunPipelineItem::Command(c),
                                 on: vm::WaitingOn2::Pid(pid)
-                            } => text(format!("{} ({})", c.to_string(), pid)).into(),
+                            } => text(format!("{} ({})", c.orig.clone(), pid)).into(),
                             VMStatus::Waiting {
                                 item: vm::RunPipelineItem::Where { .. },
                                 ..
@@ -738,7 +739,7 @@ impl App {
                             VMStatus::Done { command, reason }
                             | VMStatus::Resolved { command: Some(command), reason: Some(reason) }
                                 => row![
-                                    text(command.to_string())
+                                    text(command.orig.clone())
                                         .width(Length::Fill),
                                     exit_reason(Some(*reason)),
                                 ].into(),
