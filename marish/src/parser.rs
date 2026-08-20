@@ -10,6 +10,17 @@ use std::sync::LazyLock;
 struct CommandParser;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+pub struct LineCol(pub usize, pub usize, pub usize); // Line, start_col, end_col
+
+impl LineCol {
+    // Not tested with multi-line input!
+    pub fn get<'a>(&self, s: &'a str) -> &'a str {
+        let l = s.match_indices('\n').nth(self.0).unwrap_or((0, "")).0;
+        &s[l + self.1 .. l + self.2]
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Operator {
     And, Xor, Or,
     Eq, Ne, Lt, Gt, Le, Ge,
@@ -29,9 +40,6 @@ pub struct BoolExpr {
     pub rhs: Single,
     pub op: Operator,
 }
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct LineCol(pub usize, pub usize, pub usize);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Var {
@@ -110,7 +118,7 @@ pub enum Connector {
 pub enum PipelineItem {
     Command(Command),
     Sub(Box<Ast>),
-    Where(Option<Box<Ast>>),
+    Where(Box<Ast>, LineCol),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,7 +150,7 @@ pub enum Stmt {
     Sub(Box<Ast>),
     Background(Box<Ast>),
     Command(Command),
-    Where(Option<Box<Ast>>),
+    Where(Box<Ast>),
     BoolExpr(BoolExpr),
     BoolNegate(Single),
     // Query(Query),
@@ -406,7 +414,7 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
                     },
                     Ast::Stmt(_, Stmt::Command(c)) => items.push(PipelineItem::Command(c)),
                     Ast::Stmt(_, Stmt::Sub(s)) => items.push(PipelineItem::Sub(s)),
-                    Ast::Stmt(_, Stmt::Where(s)) => items.push(PipelineItem::Where(s)),
+                    Ast::Stmt(lc, Stmt::Where(s)) => items.push(PipelineItem::Where(s, lc)),
                     // Ast::Stmt(_, Stmt::Query(q)) => items.push(PipelineItem::Query(q)),
                     _ => unreachable!(),
                 }
@@ -417,12 +425,8 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
         // Rule::query => Ast::Stmt(lc, Stmt::Query(parse_query(pair.into_inner())?)),
         Rule::sub => Ast::Stmt(lc, Stmt::Sub(Box::new(parse_ast(pair.into_inner().next().unwrap())?))),
         Rule::s_where => {
-            let s = if let Some(sub) = pair.into_inner().next() {
-                Some(Box::new(parse_ast(sub)?))
-            } else {
-                None
-            };
-            Ast::Stmt(lc, Stmt::Where(s))
+            let func = Box::new(parse_ast(pair.into_inner().next().unwrap())?);
+            Ast::Stmt(lc, Stmt::Where(func))
         }
         Rule::command => Ast::Stmt(lc, Stmt::Command(parse_command(pair.into_inner())?)),
         Rule::assignment => {

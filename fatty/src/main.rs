@@ -338,7 +338,8 @@ impl App {
                             Ok(p) => p,
                             Err(_) => return Task::none(),
                         };
-                        //vm::print_program(&program);
+                        // println!("{:#?}", parsed);
+                        // vm::print_program(&program);
 
                         self.control.history_cursor = None;
                         self.control.mode = ControlMode::Term;
@@ -611,6 +612,7 @@ impl App {
             let reason = match reason {
                 None => "Running".to_string(),
                 Some(ExitReason::Normal(code)) => code.to_string(),
+                Some(ExitReason::Builtin) => "done".to_string(),
                 Some(ExitReason::Signal { signal, .. }) => utils::signal_to_string(signal).to_string(),
                 Some(ExitReason::Unknown { sigval: Some(s), .. }) => format!("Signal({s})"),
                 Some(ExitReason::Unknown { sigval: None, .. }) => "Exited (unknown)".to_string(),
@@ -732,19 +734,18 @@ impl App {
                                 on: vm::WaitingOn2::Pid(pid)
                             } => text(format!("{} ({})", c.orig.clone(), pid)).into(),
                             VMStatus::Waiting {
-                                item: vm::RunPipelineItem::Where { .. },
+                                item: vm::RunPipelineItem::Where { lc, .. },
                                 ..
-                            } => text(format!("where <todo>")).into(),
+                            } => text(lc.get(&exec.cmdline)).into(),
                             VMStatus::Waiting { .. } => unreachable!(),
-                            VMStatus::Done { command, reason }
+                            VMStatus::Done { command: Some(command), reason }
                             | VMStatus::Resolved { command: Some(command), reason: Some(reason) }
                                 => row![
                                     text(command.orig.clone())
                                         .width(Length::Fill),
                                     exit_reason(Some(*reason)),
                                 ].into(),
-                            VMStatus::None
-                            | VMStatus::Resolved { .. }
+                            VMStatus::None | VMStatus::Resolved { .. } | VMStatus::Done { .. }
                                 => text("...").into(),
                         };
                         e

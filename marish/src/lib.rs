@@ -7,6 +7,7 @@ use rustix::process::Signal;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExitReason {
+    Builtin, // Builtin exited with no additional information.
     Normal(i32),
     Signal {
         signal: Signal,

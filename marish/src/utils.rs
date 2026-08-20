@@ -25,6 +25,10 @@ impl Write for FdRw {
             match rustix::io::write(&self.0, buf) {
                 Ok(n) => return Ok(n),
                 Err(Errno::INTR) => continue,
+
+                // TODO: poll with Tokio AsyncFd rather than stupidly retrying
+                Err(Errno::AGAIN) => continue,
+
                 Err(e) => return Err(e.into()),
             }
         }

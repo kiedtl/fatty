@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, watch};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command2 {
+    pub lc: LineCol,
     pub path: PathBuf,
     pub orig: String,
     pub argc: usize, // 0 means no arguments.
@@ -30,7 +31,7 @@ pub struct Command2 {
 #[derive(Debug, Clone)]
 pub enum RunPipelineItem {
     Command(Command2),
-    Where { block: usize },
+    Where { block: usize, lc: LineCol },
     // Query(Query),
 }
 
@@ -141,7 +142,7 @@ pub enum VMStatus {
         on: WaitingOn2,
     },
     Done {
-        command: Command2,
+        command: Option<Command2>,
         reason: ExitReason,
     },
     Resolved {
@@ -167,7 +168,7 @@ pub enum WaitingOn {
     Builtin(Shared<BoxFuture<'static, ()>>, Option<PipeReader>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum WaitingOn2 {
     Pid(Pid),
     Builtin(tokio::task::AbortHandle),
@@ -262,6 +263,7 @@ impl VM {
                 }
 
                 let mut reader = None;
+                let mut reason = ExitReason::Builtin;
                 match self.waiting_on.take() {
                     None => (),
                     Some(WaitingOn::Builtin(jh, maybe_reader)) => {
@@ -272,20 +274,23 @@ impl VM {
                         reader = maybe_reader;
                         match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
                             Ok(Some((_, status))) => {
-                                let reason = ExitReason::from(status);
+                                reason = ExitReason::from(status);
                                 self.child_exit_stack.push(reason);
-                                if let Some(sender) = &self.status {
-                                    sender.send_modify(move |previous| {
-                                        let VMStatus::Waiting {
-                                            item: RunPipelineItem::Command(command), ..
-                                        } = std::mem::take(previous) else { unreachable!() };
-                                        *previous = VMStatus::Done { command, reason };
-                                    });
-                                }
                             },
                             Ok(None) | Err(_) => unreachable!(),
                         }
                     }
+                }
+
+                if let Some(sender) = &self.status {
+                    sender.send_modify(move |previous| {
+                        let command = match std::mem::take(previous) {
+                            VMStatus::Waiting { item: RunPipelineItem::Command(command), .. } => Some(command),
+                            VMStatus::Waiting { .. } => None,
+                            _ => unreachable!(),
+                        };
+                        *previous = VMStatus::Done { command, reason };
+                    });
                 }
 
                 if let Some(mut reader) = reader {
@@ -452,7 +457,7 @@ impl VM {
                     }
 
                     match item {
-                        RunPipelineItem::Where { block } => {
+                        RunPipelineItem::Where { block, .. } => {
                             let writer = writer_obj.take()
                                 .map(|w| Box::new(w) as Box<dyn std::io::Write + Send>)
                                 .or_else(|| self.fd3_slave.as_ref().map(|fd3| Box::new(FdRw(fd3.clone())) as _))
@@ -568,23 +573,23 @@ impl VM {
                     // spawned Job VM -- i.e. one is const and one isn't
                     scope.is_inherited = true;
                 }
+                let mut vm = VM {
+                    test_ctx: Default::default(),
+                    fd3_slave: self.fd3_slave.clone(),
+                    slave: None,
+                    env,
+                    program,
+                    stack: Vec::new(),
+                    scope,
+                    rstack: Vec::new(),
+                    pc: (block, None),
+                    waiting_on: None,
+                    child_exit_stack: Vec::new(),
+                    status: Some(tx),
+                    msg_tx: None,
+                    done: false,
+                };
                 tokio::spawn(async move {
-                    let mut vm = VM {
-                        test_ctx: Default::default(),
-                        fd3_slave: None,
-                        slave: None,
-                        env,
-                        program,
-                        stack: Vec::new(),
-                        scope: Vec::new(),
-                        rstack: Vec::new(),
-                        pc: (block, None),
-                        waiting_on: None,
-                        child_exit_stack: Vec::new(),
-                        status: Some(tx),
-                        msg_tx: None,
-                        done: false,
-                    };
                     vm.execute().await;
                 });
 
@@ -801,9 +806,10 @@ impl VM {
             if let Some(sender) = &self.status {
                 sender.send_modify(move |previous| {
                     match std::mem::take(previous) {
-                        VMStatus::Done { command, reason } => *previous = VMStatus::Resolved { command: Some(command), reason: Some(reason) },
+                        VMStatus::Done { command, reason } => *previous = VMStatus::Resolved { command, reason: Some(reason) },
                         VMStatus::None => *previous = VMStatus::Resolved { command: None, reason: None },
-                        _ => unreachable!(),
+                        VMStatus::Resolved { command, reason } => panic!("Job already resolved: {command:?} {reason:?}"),
+                        VMStatus::Waiting { item, on } => panic!("Job waiting: {item:?} {on:?}"),
                     }
                 });
             }
@@ -923,7 +929,7 @@ pub fn print_program(p: &[Block]) {
                         for item in items {
                             match item {
                                 RunPipelineItem::Command(c) => println!("  - run {}: ({} args)", c.path.display(), c.argc),
-                                RunPipelineItem::Where { block } => println!("  - where {block}"),
+                                RunPipelineItem::Where { block, .. } => println!("  - where {block}"),
                             }
                         }
                     },
@@ -1146,7 +1152,7 @@ mod builtin {
         }
 
         match s {
-            S::V | S::H => todo!(), // TODO: handle partial data
+            S::V | S::H => (), // TODO: handle incomplete data
             S::PT(_, stt) => stt.end()?,
             S::PA(sta) => sta.end()?,
         }

@@ -202,7 +202,7 @@ fn compile_ast(
                     let orig = command_str.to_string();
                     out.push(Instr::Run {
                         muffle: ctx.muffle,
-                        command: Command2 { orig, path: command_path, argc }
+                        command: Command2 { lc: command.lc, orig, path: command_path, argc }
                     });
                 },
             }
@@ -229,23 +229,18 @@ fn compile_ast(
                                 for item in c.argv.iter().rev() {
                                     compile_single(ctx.muffle(), path, item, out, blocks)?;
                                 }
-                                let argc = c.argv.len();
-                                Ok(RunPipelineItem::Command(Command2 { orig, argc, path: command_path }))
+                                Ok(RunPipelineItem::Command(Command2 {
+                                    lc: c.lc, orig, argc: c.argv.len(),
+                                    path: command_path
+                                }))
                             },
-                            PipelineItem::Where(func) => {
-                                if let Some(func) = func {
-                                    let mut b = Block::new_internal();
-                                    compile_ast(ctx, path, func, &mut b.contents, blocks)?;
-                                    b.contents.push(Instr::Return);
-                                    blocks.push(b);
-                                    Ok(RunPipelineItem::Where { block: blocks.len() - 1 })
-                                } else {
-                                    Ok(RunPipelineItem::Where { block: 0 })
-                                }
+                            PipelineItem::Where(func, lc) => {
+                                let mut b = Block::new_internal();
+                                compile_ast(ctx, path, func, &mut b.contents, blocks)?;
+                                b.contents.push(Instr::Return);
+                                blocks.push(b);
+                                Ok(RunPipelineItem::Where { block: blocks.len() - 1, lc: *lc })
                             },
-                            // PipelineItem::Query(q) => {
-                            //     Ok(RunPipelineItem::Query(q.clone()))
-                            // },
                             PipelineItem::Sub(_) => todo!(),
                         })
                         .collect::<Result<Vec<_>, _>>()?
@@ -256,12 +251,11 @@ fn compile_ast(
             }
         }
         Ast::Stmt(_lc, Stmt::Background(ast)) => {
-            out.push(Instr::CallAsync { block: blocks.len() });
-
             let mut b = Block::new_internal();
             compile_ast(ctx, path, ast, &mut b.contents, blocks)?;
             b.contents.push(Instr::Return);
             blocks.push(b);
+            out.push(Instr::CallAsync { block: blocks.len() - 1 });
         },
         _ => todo!(),
     }
