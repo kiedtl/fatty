@@ -5,17 +5,7 @@ use clap::Parser;
 use nix::sys::statvfs::statvfs;
 
 use bwine::{self, Value};
-
-#[derive(Parser)]
-#[command(version, about, long_about = None)]
-struct Cli {
-    #[arg(short = 'H', help = "Human-readable sizes.")]
-    human: bool,
-    #[arg(short = 'i', help = "Show inode information.")]
-    inodes: bool,
-    #[arg(short = 'T', help = "Show filesystem type.")]
-    fstype: bool,
-}
+use crate::cli::df::Cli;
 
 struct Mount {
     device: String,
@@ -76,7 +66,7 @@ fn run(args: &Cli) -> Result<()> {
             ])?;
         }
 
-        stt.end();
+        stt.end().unwrap();
     } else {
         let mut header = vec!["Filesystem".to_string()];
         if args.fstype { header.push("Type".into()); }

@@ -491,7 +491,7 @@ pub enum Value<'a> {
     // type 2: opaque bytes
     Bytes(Cow<'a, [u8]>),
     // type 3: UTF-8
-    Text(Cow<'static, str>),
+    Text(Cow<'a, str>),
     // type 4
     Array(Cow<'a, [Value<'a>]>),
     // type 5: ordered pairs
@@ -516,18 +516,21 @@ pub enum Value<'a> {
     Timestamp(i64),
 }
 
-impl From<usize>  for Value<'static> { fn from(s: usize)  -> Value<'static> { Value::Int(s as _) } }
-impl From<u64>    for Value<'static> { fn from(s: u64)    -> Value<'static> { Value::Int(s as _) } }
-impl From<u32>    for Value<'static> { fn from(s: u32)    -> Value<'static> { Value::Int(s as _) } }
-impl From<u16>    for Value<'static> { fn from(s: u16)    -> Value<'static> { Value::Int(s as _) } }
-impl From<u8>     for Value<'static> { fn from(s: u8)     -> Value<'static> { Value::Int(s as _) } }
-impl From<isize>  for Value<'static> { fn from(s: isize)  -> Value<'static> { Value::Int(s as _) } }
-impl From<i64>    for Value<'static> { fn from(s: i64)    -> Value<'static> { Value::Int(s as _) } }
-impl From<i32>    for Value<'static> { fn from(s: i32)    -> Value<'static> { Value::Int(s as _) } }
-impl From<i16>    for Value<'static> { fn from(s: i16)    -> Value<'static> { Value::Int(s as _) } }
-impl From<i8>     for Value<'static> { fn from(s: i8)     -> Value<'static> { Value::Int(s as _) } }
-impl From<String> for Value<'static> { fn from(s: String) -> Value<'static> { Value::text(s) } }
-impl From<&'static str> for Value<'static> { fn from(s: &'static str) -> Value<'static> { Value::text(s) } }
+impl<'a> From<usize>  for Value<'a> { fn from(s: usize)  -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<u64>    for Value<'a> { fn from(s: u64)    -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<u32>    for Value<'a> { fn from(s: u32)    -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<u16>    for Value<'a> { fn from(s: u16)    -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<u8>     for Value<'a> { fn from(s: u8)     -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<isize>  for Value<'a> { fn from(s: isize)  -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<i64>    for Value<'a> { fn from(s: i64)    -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<i32>    for Value<'a> { fn from(s: i32)    -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<i16>    for Value<'a> { fn from(s: i16)    -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<i8>     for Value<'a> { fn from(s: i8)     -> Value<'a> { Value::Int(s as _) } }
+impl<'a> From<String> for Value<'a> { fn from(s: String) -> Value<'a> { Value::text(s) } }
+
+impl<'a> From<&'a str> for Value<'a> {
+    fn from(s: &'a str) -> Value<'a> { Value::text(s) }
+}
 
 impl<'a> From<&'a std::ffi::OsStr> for Value<'a> {
     fn from(s: &'a std::ffi::OsStr) -> Value<'a> {
@@ -535,8 +538,8 @@ impl<'a> From<&'a std::ffi::OsStr> for Value<'a> {
     }
 }
 
-impl<T: chrono::TimeZone> From<chrono::DateTime<T>> for Value<'static> {
-    fn from(s: chrono::DateTime<T>) -> Value<'static> {
+impl<'a, T: chrono::TimeZone> From<chrono::DateTime<T>> for Value<'a> {
+    fn from(s: chrono::DateTime<T>) -> Value<'a> {
         Value::Timestamp(s.timestamp_millis())
     }
 }
@@ -728,7 +731,7 @@ impl fmt::Display for Value<'_> {
 }
 
 impl<'a> Value<'a> {
-    pub fn text(value: impl Into<Cow<'static, str>>) -> Self {
+    pub fn text(value: impl Into<Cow<'a, str>>) -> Self {
         Value::Text(value.into())
     }
 
@@ -957,7 +960,7 @@ impl<'a, W: encode::Write> StreamingTable<'a, W> {
         Ok(())
     }
 
-    pub fn row<'v, R>(&mut self, row: R) -> Result<(), encode::Error<W::Error>>
+    pub fn row<'b, 'v, R>(&'b mut self, row: R) -> Result<(), encode::Error<W::Error>>
     where
         R: IntoIterator<Item = Value<'v>>,
         R::IntoIter: std::iter::ExactSizeIterator
@@ -994,7 +997,7 @@ impl<W: encode::Write> Drop for StreamingTable<'_, W> {
     }
 }
 
-pub fn stream_table_no_headers<'a, 'v, W: encode::Write>(e: &'a mut Encoder<W>)
+pub fn stream_table_no_headers<'a, W: encode::Write>(e: &'a mut Encoder<W>)
     -> Result<StreamingTable<'a, W>, encode::Error<W::Error>>
 {
     Ok(StreamingTable { e, width: None })

@@ -8,9 +8,15 @@ anyhow = "1.0.102"
 brandywine = { path = "../brandywine" }
 chrono = "0.4.45"
 clap = { version = "4.6.0", features = ["derive"] }
+clap_complete = "4.6.9"
 dashmap = "6"
 libc = "0.2.184"
 nix = { version = "0.31", features = ["fs", "user"] }
 rayon = "1.11"
 rustix = "1.1.4"
 tabled = "0.21.0"
+
+[build-dependencies]
+clap = { version = "4.6.0", features = ["derive"] }
+clap_complete = "4.6.9"
+

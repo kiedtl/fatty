@@ -10,33 +10,7 @@ use dashmap::DashSet;
 use rayon::prelude::*;
 
 use bwine::{self, Value};
-
-#[derive(Parser)]
-#[command(version, about, long_about = None, disable_help_flag = true, allow_negative_numbers = true)]
-struct Cli {
-    #[arg(long, action = clap::ArgAction::Help, help = "Print help.")]
-    help: Option<bool>,
-
-    #[arg(value_name = "FILE")]
-    paths: Vec<PathBuf>,
-
-    #[arg(short = 'a', long = "all",            help = "Write counts for files, not just directories.")]
-    all: bool,
-    #[arg(short = 'c', long = "total",          help = "Produce a grand total.")]
-    total: bool,
-    #[arg(short = 'h', long = "human-readable", help = "Print sizes in human-readable format.")]
-    human: bool,
-    #[arg(             long = "inodes",         help = "List inode usage instead of block usage.")]
-    inodes: bool,
-    #[arg(short = 's', long = "summarize",      help = "Display only a total for each argument.")]
-    summarize: bool,
-    #[arg(short = 't', long = "threshold", value_name = "SIZE", help = "Exclude entries smaller than SIZE if positive, or larger than SIZE if negative.")]
-    threshold: Option<String>,
-    #[arg(            long = "block-size", value_name = "SIZE", help = "Scale sizes by SIZE before printing.")]
-    block_size: Option<String>,
-    #[arg(short = 'd', long = "max-depth", value_name = "N", help = "Print the total for a directory only if it is N or fewer levels below the argument.")]
-    max_depth: Option<usize>,
-}
+use crate::cli::du::Cli;
 
 #[derive(Copy, Clone)]
 struct Opts {
@@ -102,7 +76,7 @@ fn run(args: &Cli) -> Result<()> {
             stt.row([Value::from(gt), Value::Null])?;
         }
 
-        stt.end();
+        stt.end().unwrap();
     } else {
         for p in paths {
             gt += du(p, &opts, 0, &seen, tx.clone());

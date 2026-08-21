@@ -27,3 +27,5 @@ serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.51.0", features = ["sync"] }
 unicode-segmentation = "1.13.2"
 vte = { version = "0.15.0", features = ["bitflags", "ansi"] }
+serde_json = "1.0.151"
+dirs = "6.0.0"

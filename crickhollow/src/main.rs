@@ -2,6 +2,8 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 mod bolger;
+mod cli;
+mod complete;
 mod cp;
 mod df;
 mod du;
@@ -19,6 +21,7 @@ fn main() {
             Some(f) if f == OsStr::new("ls") => ls::main(),
             Some(f) if f == OsStr::new("ps") => ps::main(),
             Some(f) if f == OsStr::new("max") => max::main(),
+            Some(f) if f == OsStr::new("crickhollow_complete") => complete::main(),
             Some(f) => eprintln!("Unknown file {f:?}."),
             None => eprintln!("Need argv[0]"),
         }

@@ -17,6 +17,8 @@ use std::process::{Command, Child};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, Duration};
 
+use dirs;
+use serde::{Serialize, Deserialize};
 use futures::stream::BoxStream;
 use futures::channel::mpsc as futures_mpsc; // TODO: convert all to tokio's mpsc
 use futures::{StreamExt, SinkExt};
@@ -108,6 +110,11 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(App::theme)
         .run()
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Completions {
+    registry: HashMap<PathBuf, PathBuf>,
 }
 
 pub struct Execution {
@@ -214,7 +221,7 @@ pub enum ControlMessage {
 pub enum Message {
     None,
     Animate,
-    Input(String),
+    Input(String, widgets::input::Cursor),
     Run,
     JobResolved(usize, usize),
     VMMessage(usize, vm::VMMessage),
@@ -229,11 +236,13 @@ pub enum Message {
 }
 
 struct App {
+    completions: Completions,
     master: Arc<OwnedFd>,
     slave: OwnedFd,
     control: ControlState,
     input: String,
     input_compile_error: Option<LineCol>,
+    input_completions: Vec<String>,
     execs: Vec<Execution>,
     vars: HashMap<String, bwine::Value<'static>>,
     theme: styles::Theme,
@@ -264,6 +273,11 @@ impl App {
     }
 
     fn new() -> (Self, Task<Message>) {
+        let config_dir = dirs::config_dir().unwrap().join("fatty");
+        let completions: Completions = serde_json::from_str(
+            &std::fs::read_to_string(config_dir.join("completions.json")).unwrap()
+        ).unwrap();
+
         let pty = rustix_openpty::openpty(None, None).unwrap();
         let master_flags = rustix::fs::fcntl_getfl(&pty.controller).unwrap();
         rustix::fs::fcntl_setfl(
@@ -289,9 +303,11 @@ impl App {
 
         (
             Self {
+                completions,
                 control: ControlState::new(),
                 input: String::new(),
                 input_compile_error: None,
+                input_completions: Vec::new(),
                 listing: listing(),
                 listing_last_changed: None,
                 execs: Vec::new(),
@@ -316,13 +332,67 @@ impl App {
         match message {
             Message::None => { }
             Message::Animate => { }
-            Message::Input(s) => {
+            Message::Input(s, cursor) => {
                 self.input = s;
                 self.input_compile_error = None;
+                self.input_completions.clear();
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
                         match compiler::compile(&self.path, &parsed) {
-                            Ok(_) => (),
+                            Ok(blocks) => {
+                                let value = widgets::input::Value::new(&self.input);
+                                let cursor_start = cursor.start(&value);
+                                let mut editing_command = None;
+                                for block in blocks {
+                                    for instr in &block.contents {
+                                        match instr {
+                                            vm::Instr::Run { command, .. } => {
+                                                if command.lc.1 <= cursor_start && command.lc.2 >= cursor_start {
+                                                    editing_command = Some(command.clone());
+                                                }
+                                            },
+                                            vm::Instr::RunPipeline { items, .. } => {
+                                                for item in items {
+                                                    match item {
+                                                        vm::RunPipelineItem::Command(command) => {
+                                                            if command.lc.1 <= cursor_start && command.lc.2 >= cursor_start {
+                                                                editing_command = Some(command.clone());
+                                                            }
+                                                        },
+                                                        _ => (),
+                                                    }
+                                                }
+                                            },
+                                            _ => (),
+                                        }
+                                    }
+                                }
+
+                                if let Some(c) = editing_command &&
+                                    let Some(completer) = self.completions.registry.get(&c.path)
+                                {
+                                    let full_inp = self.input[c.lc.1..c.lc.2].to_owned();
+                                    let cmd = full_inp[..c.orig.len()].to_owned();
+                                    let inp = full_inp[c.orig.len()..].to_owned();
+                                    let out = std::process::Command::new(completer)
+                                        .args([cmd, inp, cursor_start.to_string()])
+                                        .output();
+                                    match out {
+                                        Ok(output) => {
+                                            let s = String::from_utf8_lossy(&output.stdout);
+                                            for line in s.split("\n") {
+                                                if line.trim().is_empty() {
+                                                    continue;
+                                                }
+                                                self.input_completions.push(line.to_owned());
+                                            }
+                                        },
+                                        Err(_) => {
+                                            println!("Completion fails");
+                                        },
+                                    }
+                                }
+                            }
                             Err(compiler::CompileError::CommandNotFound(lc, _)) => {
                                 self.input_compile_error = Some(lc);
                             }
@@ -835,7 +905,8 @@ impl App {
             col
         };
 
-        let mut input = input(self.control.mode, "rm -rf /", &self.input);
+        let mut input = input(self.control.mode, "rm -rf /", &self.input)
+            .completions(self.input_completions.clone());
 
         if let Some(LineCol(_, s, e)) = self.input_compile_error {
             input.add_annotation(s, e);

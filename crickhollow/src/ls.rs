@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::ffi::OsString;
 
@@ -11,10 +12,7 @@ use chrono::{DateTime, Local};
 use clap::Parser;
 use rustix::fs::FileType;
 
-#[derive(Parser)]
-#[command(version, about, long_about = None)]
-struct Cli {
-}
+use crate::cli::ls::Cli;
 
 pub fn main() {
     let args = Cli::parse();
@@ -39,7 +37,7 @@ pub fn main() {
         ).unwrap();
         for f in files {
             stt.row([
-                Value::from(f.name.as_os_str()),
+                Value::Bytes(f.name.as_bytes().into()),
                 Value::from(filetype_to_str(&f.kind)),
                 Value::from(f.mode),
                 Value::from(f.size),
@@ -51,7 +49,7 @@ pub fn main() {
                 Value::from(f.created),
             ]).unwrap();
         }
-        stt.end();
+        stt.end().unwrap();
     } else {
         use tabled::{builder::Builder, settings::{object::Rows, Color, Style}};
         let mut builder = Builder::from_iter(

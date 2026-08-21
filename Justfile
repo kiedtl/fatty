@@ -12,6 +12,7 @@ install:
 	ln -fs ~/.local/bin/fatty_bin/crickhollow/crickhollow ~/.local/bin/fatty_bin/crickhollow/cp
 	ln -fs ~/.local/bin/fatty_bin/crickhollow/crickhollow ~/.local/bin/fatty_bin/crickhollow/max
 	ln -fs ~/.local/bin/fatty_bin/crickhollow/crickhollow ~/.local/bin/fatty_bin/crickhollow/ls
+	ln -fs ~/.local/bin/fatty_bin/crickhollow/crickhollow ~/.local/bin/fatty_bin/crickhollow/crickhollow_complete
 	chmod +x ~/.local/bin/fatty_bin/crickhollow/*
 	chmod +x ~/.local/bin/fatty_bin/tools/*
 

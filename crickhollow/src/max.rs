@@ -7,16 +7,8 @@ use anyhow::Result;
 use clap::Parser;
 
 use crate::bolger::Bolger;
+use crate::cli::max::Cli;
 use bwine::{self, Value, Token};
-
-#[derive(Parser)]
-#[command(version, about, long_about = None)]
-struct Cli {
-    #[arg(value_name = "NUMBER")]
-    num: usize,
-    #[arg(short = 'f', long = "field", value_name = "FIELD", help = "Which field (if a table) to rank by.")]
-    field: Option<String>,
-}
 
 #[derive(Clone)]
 struct Opts {
@@ -37,7 +29,7 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
     let mut b = Bolger::new();
     let mut r = 0;
     let mut t = Instant::now();
-    let mut bolger_print = |b: &mut Bolger, h: &[Value], rows: &[Vec<Value>]| {
+    let bolger_print = |b: &mut Bolger, h: &[Value], rows: &[Vec<Value>]| {
         b.begin("table");
         b.attr_str("id", "t");
         print!(" :columns [ ");
@@ -55,7 +47,7 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
         b.end("table");
     };
 
-    let mut bolger_print_sp = |b: &mut Bolger, r| {
+    let bolger_print_sp = |b: &mut Bolger, r| {
         b.begin("row");
         b.attr_str("id", "sp");
 
@@ -142,7 +134,7 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
                                 return Ok(());
                             };
                             hp = p;
-                            h = harr;
+                            h = harr.into_owned();
                             ai += ns + 1; // Skip next Token::Array that begins rows.
                             s = S::PT;
                         }
@@ -153,7 +145,7 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
                         {
                             r += 1;
                             if rows.len() < opts.num {
-                                rows.push(row);
+                                rows.push(row.into_owned());
                                 changed_something = true;
                             } else {
                                 for p in 0..rows.len() {
@@ -166,7 +158,7 @@ fn run(Cli { num, field }: Cli) -> Result<()> {
                                         },
                                     };
                                     if gt {
-                                        rows[p] = row;
+                                        rows[p] = row.into_owned();
                                         changed_something = true;
                                         break;
                                     }

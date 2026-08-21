@@ -120,7 +120,7 @@ fn run(Cli { exprs }: Cli) -> Result<()> {
                     None => break 'l,
                     Some(Token::Array(_)) => match Token::collect(&ast[ai..]) {
                         Some((ns, Value::Array(items))) => {
-                            h = items;
+                            h = items.to_vec();
                             ai += ns;
                             s = S::TableRowsOpen;
                         }
@@ -187,7 +187,7 @@ fn run(Cli { exprs }: Cli) -> Result<()> {
         eprintln!("select: input ended prematurely");
     }
 
-    out.end();
+    out.end().unwrap();
     Ok(())
 }
 
@@ -205,7 +205,7 @@ fn nav(value: &Value<'static>, segments: &[Seg]) -> Option<Value<'static>> {
         Value::Table { rows, .. } => match seg {
             Seg::Index(i) => rows
                 .get(*i)
-                .map(|row| Value::Array(row.clone()))
+                .map(|row| Value::Array(row.clone().into()))
                 .and_then(|row| nav(&row, rest)),
             Seg::Field(_) => None,
         },
@@ -218,7 +218,7 @@ fn nav(value: &Value<'static>, segments: &[Seg]) -> Option<Value<'static>> {
 /// segments navigate into that cell as usual.
 fn select_from_row(header: &[Value<'static>], row: &[Value<'static>], expr: &Expr) -> Value<'static> {
     let Some((first, rest)) = expr.segments.split_first() else {
-        return Value::Array(row.to_vec());
+        return Value::Array(row.to_vec().into());
     };
 
     let idx = match first {

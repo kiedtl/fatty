@@ -27,6 +27,7 @@ Shell
   x basic
   - Exclusion mode flag -e
 x builtin: where filter
+- builtin: foreach/map
 x index array/table with arbitrary expressions
 x variable assignments
   x array literals
@@ -44,12 +45,15 @@ x expressions in commands
 - environment variables
   - $env variables
   - set for command
+- range type
+  - Iterating over range
+  - Indexing by range
 
-Assign new syntax
+Shell: figure out uses for new syntax
 - command!
 - @command
 
-Various builtins/tools
+Shell: various builtins/tools
 - format (format date, time, duration, size, ...)
 - parse (parse date, time, duration, integer, float, size, ip address, file mode)
 - sort-by (ascending, descending)

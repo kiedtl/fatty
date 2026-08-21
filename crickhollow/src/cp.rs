@@ -3,7 +3,7 @@ use std::ffi::OsStr;
 use std::io::{self, Read, BufReader, BufWriter};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt, FileTypeExt};
 use std::os::linux::fs::MetadataExt as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{bail, Result, Context};
 use clap::Parser;
@@ -16,40 +16,13 @@ use nix::{
 };
 
 use crate::bolger::Bolger;
+use crate::cli::cp::Cli;
 
 macro_rules! confirm {
     ($fmt:literal $(, $arg:expr)*) => {{
         eprintln!($fmt, $($arg,)*);
         read_confirm()
     }}
-}
-
-#[derive(Parser)]
-#[command(version, about, long_about = None)]
-struct Cli {
-    #[arg(required = true, value_name = "SOURCE")]
-    source: Vec<PathBuf>,
-    #[arg(required = true, value_name = "DEST")]
-    dest: PathBuf,
-
-    #[arg(short = 'a', long = "archive",     help = "Preserve special files. Implies -rp.")]
-    archive: bool,
-    #[arg(short = 'f', long = "force",       help = "Delete unopenable destination files if needed.")]
-    force: bool,
-    #[arg(short = 'i', long = "interactive", help = "Confirm before overwriting.")]
-    interactive: bool,
-    #[arg(short = 'p', long = "preserve",    help = "Preserve file attributes.")]
-    preserve: bool,
-    #[arg(short = 'r', long = "recursive",   help = "Copy recursively.")]
-    recursive: bool,
-    // #[arg(short = 'v', long = "verbose",     help = "Print verbose logs.")]
-    // verbose: bool,
-    #[arg(short = 'H',                       help = "Follow SOURCE if it's a symbolic link.")]
-    follow_h: bool,
-    #[arg(short = 'L',                       help = "Always follow symbolic links in SOURCE.")]
-    follow_l: bool,
-    #[arg(short = 'P',                       help = "Never follow symbolic links in SOURCE.")]
-    follow_p: bool,
 }
 
 #[derive(Copy, Clone)]

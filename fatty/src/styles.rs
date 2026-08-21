@@ -106,6 +106,138 @@ impl iced::theme::Base for Theme {
     }
 }
 
+type MenuStyleFn<'a> = Box<dyn Fn(&Theme) -> iced::overlay::menu::Style + 'a>;
+impl iced::overlay::menu::Catalog for Theme {
+    type Class<'a> = MenuStyleFn<'a>;
+
+    fn default<'a>() -> MenuStyleFn<'a> {
+        Box::new(|t| {
+            iced::overlay::menu::Style {
+                background: Background::Color(t.bg(13)),
+                border: Border {
+                    width: 1.0,
+                    radius: RAD,
+                    color: t.bg(1),
+                },
+                text_color: t.fg,
+                selected_text_color: t.bg(14),
+                selected_background: Background::Color(t.bg(4)),
+                shadow: Default::default(),
+            }
+        })
+    }
+
+    fn style(&self, class: &MenuStyleFn<'_>) -> iced::overlay::menu::Style {
+        class(self)
+    }
+}
+
+impl iced::widget::scrollable::Catalog for Theme {
+    type Class<'a> = Box<dyn Fn(&Theme, iced::widget::scrollable::Status) -> iced::widget::scrollable::Style + 'a>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        use iced::widget::scrollable as iced_scrollable;
+        Box::new(|t: &Theme, s: iced_scrollable::Status| -> iced_scrollable::Style {
+            let auto_scroll = iced_scrollable::AutoScroll {
+                background: Background::Color(t.bg(3)),
+                border: Border {
+                    color: t.bg(2),
+                    width: 1.,
+                    radius: RAD,
+                    ..Default::default()
+                },
+                icon: t.ac(7),
+                shadow: Default::default(),
+            };
+
+            let rail = iced_scrollable::Rail {
+                background: Some(Background::Color(t.bg(15))),
+                border: Border {
+                    radius: RAD,
+                    ..Default::default()
+                },
+                scroller: iced_scrollable::Scroller {
+                    background: Background::Color(t.ac(7)),
+                    border: Border {
+                        color: t.bg(2),
+                        width: 1.,
+                        radius: RAD,
+                        ..Default::default()
+                    },
+                },
+            };
+
+            match s {
+                iced_scrollable::Status::Active { .. } => {
+                    iced_scrollable::Style {
+                        container: container::Style::default(),
+                        vertical_rail: rail,
+                        horizontal_rail: rail,
+                        gap: Default::default(),
+                        auto_scroll,
+                    }
+                },
+                iced_scrollable::Status::Hovered {
+                    is_horizontal_scrollbar_hovered: ish,
+                    is_vertical_scrollbar_hovered: isv,
+                    ..
+                } => {
+                    let h = iced_scrollable::Rail {
+                        scroller: iced_scrollable::Scroller {
+                            background: Background::Color(t.ac(9)),
+                            border: Border {
+                                color: t.bg(2),
+                                width: 1.,
+                                radius: RAD,
+                                ..Default::default()
+                            },
+                            ..rail.scroller
+                        },
+                        ..rail
+                    };
+                    iced_scrollable::Style {
+                        vertical_rail: if isv { h } else { rail },
+                        horizontal_rail: if ish { h } else { rail },
+                        container: container::Style::default(),
+                        gap: Default::default(),
+                        auto_scroll,
+                    }
+                },
+                iced_scrollable::Status::Dragged {
+                    is_horizontal_scrollbar_dragged: ish,
+                    is_vertical_scrollbar_dragged: isv,
+                    ..
+                } => {
+                    let h = iced_scrollable::Rail {
+                        scroller: iced_scrollable::Scroller {
+                            background: Background::Color(t.ac(10)),
+                            border: Border {
+                                color: t.bg(2),
+                                width: 1.,
+                                radius: RAD,
+                                ..Default::default()
+                            },
+                            ..rail.scroller
+                        },
+                        ..rail
+                    };
+                    iced_scrollable::Style {
+                        vertical_rail: if isv { h } else { rail },
+                        horizontal_rail: if ish { h } else { rail },
+                        container: container::Style::default(),
+                        gap: Default::default(),
+                        auto_scroll,
+                    }
+                },
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>, status: iced::widget::scrollable::Status) -> iced::widget::scrollable::Style {
+        class(self, status)
+    }
+}
+
 impl iced::widget::text::Catalog for Theme {
     type Class<'a> = TextClass;
 
@@ -265,11 +397,11 @@ impl text_input::Catalog for Theme {
 impl input::Catalog for Theme {
     type Class<'a> = Box<dyn Fn(&Theme, input::Status) -> input::Style + 'a>;
 
-    fn default<'a>() -> Self::Class<'a> {
+    fn default<'a>() -> <Self as input::Catalog>::Class<'a> {
         Box::new(myinput)
     }
 
-    fn style(&self, class: &Self::Class<'_>, status: input::Status) -> input::Style {
+    fn style(&self, class: &<Self as input::Catalog>::Class<'_>, status: input::Status) -> input::Style {
         class(self, status)
     }
 }

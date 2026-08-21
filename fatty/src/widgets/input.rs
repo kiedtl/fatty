@@ -21,6 +21,7 @@ use iced::{
         },
         InputMethod, Layout, Shell, Widget,
     },
+    overlay::{self, menu},
     touch,
     window,
     Alignment, Background, Border, Color, Element, Event, Length, Padding,
@@ -64,13 +65,15 @@ where
     size: Option<Pixels>,
     line_height: text::LineHeight,
     alignment: alignment::Horizontal,
-    on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
+    on_input: Option<Box<dyn Fn(String, Cursor) -> Message + 'a>>,
     on_paste: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_submit: Option<Message>,
     icon: Option<Icon<Renderer::Font>>,
-    class: Theme::Class<'a>,
+    class: <Theme as Catalog>::Class<'a>,
     last_status: Option<Status>,
     annotations: Vec<Annotation>,
+    completions: Vec<String>,
+    completion_menu_style: <Theme as menu::Catalog>::Class<'a>,
 }
 
 /// The default [`Padding`] of a [`TextInput`].
@@ -100,9 +103,11 @@ where
             on_paste: None,
             on_submit: None,
             icon: None,
-            class: Theme::default(),
+            class: <Theme as Catalog>::default(),
             last_status: None,
             annotations: Vec::new(),
+            completions: Vec::new(),
+            completion_menu_style: <Theme as menu::Catalog>::default(),
         }
     }
 
@@ -116,7 +121,7 @@ where
     /// the [`TextInput`].
     ///
     /// If this method is not called, the [`TextInput`] will be disabled.
-    pub fn on_input(mut self, on_input: impl Fn(String) -> Message + 'a) -> Self {
+    pub fn on_input(mut self, on_input: impl Fn(String, Cursor) -> Message + 'a) -> Self {
         self.on_input = Some(Box::new(on_input));
         self
     }
@@ -125,7 +130,7 @@ where
     /// the [`TextInput`], if `Some`.
     ///
     /// If `None`, the [`TextInput`] will be disabled.
-    pub fn on_input_maybe(mut self, on_input: Option<impl Fn(String) -> Message + 'a>) -> Self {
+    pub fn on_input_maybe(mut self, on_input: Option<impl Fn(String, Cursor) -> Message + 'a>) -> Self {
         self.on_input = on_input.map(|f| Box::new(f) as _);
         self
     }
@@ -206,7 +211,7 @@ where
     #[must_use]
     pub fn style(mut self, style: impl Fn(&Theme, Status) -> Style + 'a) -> Self
     where
-        Theme::Class<'a>: From<StyleFn<'a, Theme>>,
+        <Theme as Catalog>::Class<'a>: From<StyleFn<'a, Theme>>,
     {
         self.class = (Box::new(style) as StyleFn<'a, Theme>).into();
         self
@@ -214,8 +219,13 @@ where
 
     /// Sets the style class of the [`TextInput`].
     #[must_use]
-    pub fn class(mut self, class: impl Into<Theme::Class<'a>>) -> Self {
+    pub fn class(mut self, class: impl Into<<Theme as Catalog>::Class<'a>>) -> Self {
         self.class = class.into();
+        self
+    }
+
+    pub fn completions(mut self, completions: Vec<String>) -> Self {
+        self.completions = completions;
         self
     }
 
@@ -376,7 +386,7 @@ where
         let mut children_layout = layout.children();
         let text_bounds = children_layout.next().unwrap().bounds();
 
-        let style = theme.style(&self.class, self.last_status.unwrap_or(Status::Disabled));
+        let style = Catalog::style(theme, &self.class, self.last_status.unwrap_or(Status::Disabled));
 
         renderer.fill_quad(
             renderer::Quad {
@@ -772,7 +782,7 @@ where
                         }
 
                         if modified {
-                            let message = (self.on_input.as_ref().unwrap())(self.value.to_string());
+                            let message = (self.on_input.as_ref().unwrap())(self.value.to_string(), state.cursor);
                             shell.publish(message);
                             focus.updated_at = Instant::now();
                             update_cache(state, &self.value);
@@ -808,7 +818,7 @@ where
                                 let mut editor = Editor::new(&mut self.value, &mut state.cursor);
                                 editor.delete();
 
-                                let message = (on_input)(editor.contents());
+                                let message = (on_input)(editor.contents(), state.cursor);
                                 shell.publish(message);
                                 shell.capture_event();
 
@@ -840,7 +850,7 @@ where
                                 let message = if let Some(paste) = &self.on_paste {
                                     (paste)(editor.contents())
                                 } else {
-                                    (on_input)(editor.contents())
+                                    (on_input)(editor.contents(), state.cursor)
                                 };
                                 shell.publish(message);
                                 shell.capture_event();
@@ -878,7 +888,7 @@ where
 
                                 editor.insert(c);
 
-                                let message = (on_input)(editor.contents());
+                                let message = (on_input)(editor.contents(), state.cursor);
                                 shell.publish(message);
                                 shell.capture_event();
 
@@ -912,7 +922,7 @@ where
                                 let mut editor = Editor::new(&mut self.value, &mut state.cursor);
                                 editor.backspace();
 
-                                let message = (on_input)(editor.contents());
+                                let message = (on_input)(editor.contents(), state.cursor);
                                 shell.publish(message);
                                 shell.capture_event();
 
@@ -939,7 +949,7 @@ where
                                 let mut editor = Editor::new(&mut self.value, &mut state.cursor);
                                 editor.delete();
 
-                                let message = (on_input)(editor.contents());
+                                let message = (on_input)(editor.contents(), state.cursor);
                                 shell.publish(message);
                                 shell.capture_event();
 
@@ -1117,7 +1127,7 @@ where
                         focus.updated_at = Instant::now();
                         state.is_pasting = None;
 
-                        let message = (on_input)(editor.contents());
+                        let message = (on_input)(editor.contents(), state.cursor);
                         shell.publish(message);
                         shell.capture_event();
 
@@ -1259,6 +1269,55 @@ where
         self.draw(tree, renderer, theme, layout, cursor, None, viewport);
     }
 
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        let Some(on_input) = &self.on_input else {
+            return None;
+        };
+
+        let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+        let font = self.font.unwrap_or_else(|| renderer.default_font());
+        let text_size = self.size.unwrap_or(Pixels::from(13.));
+        let padding = 3.;
+
+        if self.completions.is_empty() || state.is_focused.is_none() {
+            return None;
+        }
+
+        let bounds = layout.bounds();
+
+        let menu = menu::Menu::new(
+            &mut state.completion_menu,
+            &self.completions,
+            &mut state.completion_hovered,
+            &|s| s.to_string(),
+            |option| {
+                let mut editor = Editor::new(&mut self.value, &mut state.cursor);
+                editor.paste(Value::new(&option));
+                (on_input)(self.value.to_string(), state.cursor)
+            },
+            None,
+            &self.completion_menu_style,
+        )
+            .width(bounds.width)
+            .padding(padding)
+            .text_size(text_size)
+            .font(font);
+
+        Some(menu.overlay(
+            layout.position() + translation,
+            *viewport,
+            bounds.height,
+            Length::Shrink,
+        ))
+    }
+
     fn mouse_interaction(
         &self,
         _tree: &Tree,
@@ -1318,7 +1377,7 @@ pub enum Side {
 }
 
 /// The state of a [`TextInput`].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct State<P: text::Paragraph> {
     value: paragraph::Plain<P>,
     placeholder: paragraph::Plain<P>,
@@ -1330,6 +1389,10 @@ pub struct State<P: text::Paragraph> {
     last_click: Option<mouse::Click>,
     cursor: Cursor,
     keyboard_modifiers: keyboard::Modifiers,
+
+    completion_menu: menu::State,
+    completion_hovered: Option<usize>,
+
     // TODO: Add stateful horizontal scrolling offset
 }
 
@@ -1381,6 +1444,8 @@ impl<P: text::Paragraph> State<P> {
             last_click: Default::default(),
             cursor: Default::default(),
             keyboard_modifiers: Default::default(),
+            completion_menu: menu::State::default(),
+            completion_hovered: None,
         }
     }
 
@@ -1608,15 +1673,15 @@ pub struct Style {
 }
 
 /// The theme catalog of a [`TextInput`].
-pub trait Catalog: Sized {
+pub trait Catalog: menu::Catalog + Sized {
     /// The item class of the [`Catalog`].
     type Class<'a>;
 
     /// The default class produced by the [`Catalog`].
-    fn default<'a>() -> Self::Class<'a>;
+    fn default<'a>() -> <Self as Catalog>::Class<'a>;
 
     /// The [`Style`] of a class with the given status.
-    fn style(&self, class: &Self::Class<'_>, status: Status) -> Style;
+    fn style(&self, class: &<Self as Catalog>::Class<'_>, status: Status) -> Style;
 }
 
 /// A styling function for a [`TextInput`].

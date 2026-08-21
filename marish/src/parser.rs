@@ -305,20 +305,17 @@ fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
     })
 }
 
-fn parse_command<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Command, String> {
+fn parse_command<'a>(lc: LineCol, pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Command, String> {
     let mut cmd = None;
     let mut argv = Vec::new();
-    let mut lc = None;
-    for pair in pairs {
-        if lc.is_none() {
-            lc = Some(span_lc(&pair));
+    for (i, pair) in pairs.enumerate() {
+        if i == 0 {
             cmd = Some(pair.as_str().to_owned());
         } else {
             argv.push(parse_single(pair)?);
         }
     }
 
-    let lc = lc.unwrap();
     let cmd = cmd.unwrap();
     Ok(Command { lc, cmd, argv })
 }
@@ -428,7 +425,9 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
             let func = Box::new(parse_ast(pair.into_inner().next().unwrap())?);
             Ast::Stmt(lc, Stmt::Where(func))
         }
-        Rule::command => Ast::Stmt(lc, Stmt::Command(parse_command(pair.into_inner())?)),
+        Rule::command => {
+            Ast::Stmt(lc, Stmt::Command(parse_command(lc, pair.into_inner())?))
+        },
         Rule::assignment => {
             let mut inner = pair.into_inner();
             let Token::Var(lhs) = parse_token(inner.next().unwrap())? else { unreachable!() };

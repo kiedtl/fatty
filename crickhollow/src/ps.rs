@@ -6,10 +6,7 @@ use bwine::{self, Value};
 use clap::Parser;
 use libc::pid_t;
 
-#[derive(Parser)]
-#[command(version, about, long_about = None)]
-struct Cli {
-}
+use crate::cli::ps::Cli;
 
 pub fn main() {
     let args = Cli::parse();
@@ -42,7 +39,7 @@ pub fn main() {
                 Value::from(proc.tcomm),
             ]).unwrap();
         }
-        stt.end();
+        stt.end().unwrap();
     } else {
         for proc in procs {
             let (maj, min) = proc.majmin();
