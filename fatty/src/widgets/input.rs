@@ -21,13 +21,14 @@ use iced::{
         },
         InputMethod, Layout, Shell, Widget,
     },
-    overlay::{self, menu},
+    overlay,
     touch,
     window,
     Alignment, Background, Border, Color, Element, Event, Length, Padding,
     Pixels, Point, Rectangle, Size, Vector,
 };
 
+use crate::widgets::menu;
 use crate::styles::Theme as MyTheme;
 use crate::ControlMode;
 
@@ -1298,6 +1299,10 @@ where
             &mut state.completion_hovered,
             &|s| s.to_string(),
             |option| {
+                // Move cursor back a word and delete
+                state.cursor.move_to(self.value.previous_ws_boundary(state.cursor.left(&self.value)));
+                self.value.remove_many(state.cursor.end(&self.value), self.value.len());
+                // Then paste in completion
                 let mut editor = Editor::new(&mut self.value, &mut state.cursor);
                 editor.paste(Value::new(&option));
                 (on_input)(self.value.to_string(), state.cursor)
@@ -1984,6 +1989,22 @@ impl Value {
     /// Returns the total amount of graphemes in the [`Value`].
     pub fn len(&self) -> usize {
         self.graphemes.len()
+    }
+
+    pub fn previous_ws_boundary(&self, index: usize) -> usize {
+        let mut i = index.min(self.graphemes.len());
+
+        // Skip whitespace immediately near cursor
+        while i > 0 && self.graphemes[i - 1].trim().is_empty() {
+            i -= 1;
+        }
+
+        // Then find whitespace
+        while i > 0 && !self.graphemes[i - 1].trim().is_empty() {
+            i -= 1;
+        }
+
+        i
     }
 
     /// Returns the position of the previous start of a word from the given

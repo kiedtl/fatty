@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::ExitReason;
 use crate::parser::*;
+use crate::compiler;
 use crate::utils::FdRw;
 
 use bwine::Value;
@@ -23,7 +24,7 @@ use tokio::sync::{mpsc, watch};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command2 {
     pub lc: LineCol,
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
     pub orig: String,
     pub argc: usize, // 0 means no arguments.
 }
@@ -369,7 +370,10 @@ impl VM {
                 let mut muffle_reader = None;
                 let mut keep: Option<OwnedFd> = None;
 
-                let mut pcmd = std::process::Command::new(&command.path);
+                let command_path = command.path
+                    .clone()
+                    .unwrap_or_else(|| compiler::resolve(&compiler::path_from_env(&self.env), &command.orig).unwrap());
+                let mut pcmd = std::process::Command::new(&command_path);
                 pcmd.envs(&*self.env);
                 pcmd.args(args);
 
@@ -506,7 +510,10 @@ impl VM {
                                     panic!("One of the arguments cannot be turned into a string");
                                 };
 
-                            let mut command = std::process::Command::new(&command.path);
+                            let command_path = command.path
+                                .clone()
+                                .unwrap_or_else(|| compiler::resolve(&compiler::path_from_env(&self.env), &command.orig).unwrap());
+                            let mut command = std::process::Command::new(&command_path);
                             command.envs(&*self.env);
                             command.args(args);
 
@@ -922,13 +929,13 @@ pub fn print_program(p: &[Block]) {
                 Instr::Assert(_) => println!("  - assert"),
                 Instr::ChangeDir => println!("  - cd"),
                 Instr::Run { command: Command2 { path, argc, .. }, muffle }
-                    => println!("  - run muffle={muffle} {} ({argc} args)", path.display()),
+                    => println!("  - run muffle={muffle} {:?} ({argc} args)", path),
                 Instr::RunPipeline { items, muffle, is_there_initial_value }
                     => {
                         println!("  - create_pipe muffle={muffle} iv={is_there_initial_value}");
                         for item in items {
                             match item {
-                                RunPipelineItem::Command(c) => println!("  - run {}: ({} args)", c.path.display(), c.argc),
+                                RunPipelineItem::Command(c) => println!("  - run {:?}: ({} args)", c.path, c.argc),
                                 RunPipelineItem::Where { block, .. } => println!("  - where {block}"),
                             }
                         }

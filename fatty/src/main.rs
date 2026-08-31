@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 use std::cell;
-use std::collections::HashMap;
+use std::collections::{HashSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs::DirEntry;
 use std::hash::{Hash, Hasher};
@@ -64,6 +64,7 @@ mod styles;
 mod term;
 mod utils;
 mod widgets;
+mod completer;
 
 use helpers::*;
 use styles::CS;
@@ -292,12 +293,7 @@ impl App {
         let mut exe_path = PathBuf::from(std::env::current_exe().unwrap());
         exe_path.pop();
 
-        let path_var_str = env.get(OsStr::new("PATH")).map_or(OsStr::new(""), |v| v);
-        let mut path = path_var_str
-            .as_encoded_bytes()
-            .split(|n| *n == b':')
-            .map(|seg| Path::new(OsStr::from_bytes(seg)).to_owned())
-            .collect::<Vec<_>>();
+        let mut path = compiler::path_from_env(&env);
         path.insert(0, exe_path.join("fatty_bin/tools"));
         path.insert(0, exe_path.join("fatty_bin/crickhollow"));
 
@@ -339,7 +335,15 @@ impl App {
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
                         match compiler::compile(&self.path, &parsed) {
-                            Ok(blocks) => {
+                            Ok((warnings, blocks)) => {
+                                for warning in warnings {
+                                    match warning {
+                                        compiler::Warning::CommandNotFound(lc, _) => {
+                                            self.input_compile_error = Some(lc);
+                                        }
+                                    }
+                                }
+
                                 let value = widgets::input::Value::new(&self.input);
                                 let cursor_start = cursor.start(&value);
                                 let mut editing_command = None;
@@ -368,44 +372,69 @@ impl App {
                                     }
                                 }
 
-                                if let Some(c) = editing_command &&
-                                    let Some(completer) = self.completions.registry.get(&c.path)
-                                {
-                                    let full_inp = self.input[c.lc.1..c.lc.2].to_owned();
-                                    let cmd = full_inp[..c.orig.len()].to_owned();
-                                    let inp = full_inp[c.orig.len()..].to_owned();
-                                    let out = std::process::Command::new(completer)
-                                        .args([cmd, inp, cursor_start.to_string()])
-                                        .output();
-                                    match out {
-                                        Ok(output) => {
-                                            let s = String::from_utf8_lossy(&output.stdout);
-                                            for line in s.split("\n") {
-                                                if line.trim().is_empty() {
-                                                    continue;
-                                                }
-                                                self.input_completions.push(line.to_owned());
+                                if let Some(c) = editing_command {
+                                    if cursor_start <= c.lc.1 + c.orig.len() && !c.orig.as_bytes().contains(&b'/') {
+                                        let mut completions = HashSet::new();
+                                        for path in &self.path {
+                                            match std::fs::read_dir(path) {
+                                                Ok(iter) => {
+                                                    for item in iter {
+                                                        let Ok(item) = item else { continue };
+                                                        if !compiler::is_valid_executable(item.metadata().ok()) {
+                                                            continue;
+                                                        }
+                                                        let fname = item.file_name().to_string_lossy().into_owned();
+                                                        if fname.starts_with(&c.orig) {
+                                                            completions.insert(fname);
+                                                        }
+                                                    }
+                                                },
+                                                Err(_) => continue,
                                             }
-                                        },
-                                        Err(_) => {
-                                            println!("Completion fails");
-                                        },
+                                        }
+                                        self.input_completions = completions.into_iter().collect();
+                                        self.input_completions.sort();
+                                    } else if let Some(p) = &c.path && let Some(completer) = self.completions.registry.get(p) {
+                                        let full_inp = self.input[c.lc.1..c.lc.2].to_owned();
+                                        let cmd = full_inp[..c.orig.len()].to_owned();
+                                        let inp = full_inp[c.orig.len()..].to_owned();
+                                        let out = std::process::Command::new(completer)
+                                            .args([cmd, inp, cursor_start.to_string()])
+                                            .output();
+                                        match out {
+                                            Ok(output) => {
+                                                let s = String::from_utf8_lossy(&output.stdout);
+                                                for line in s.split("\n") {
+                                                    if line.trim().is_empty() {
+                                                        continue;
+                                                    }
+                                                    self.input_completions.push(line.to_owned());
+                                                }
+                                            },
+                                            Err(_) => {
+                                                println!("Completion fails");
+                                            },
+                                        }
+                                    } else {
+                                        let full_inp = self.input[c.lc.1..c.lc.2].to_owned();
+                                        let cmd = &full_inp[..c.orig.len()];
+                                        let inp = &full_inp[c.orig.len()..];
+                                        self.input_completions = completer::dumb(cmd, inp, cursor_start);
                                     }
                                 }
                             }
-                            Err(compiler::CompileError::CommandNotFound(lc, _)) => {
-                                self.input_compile_error = Some(lc);
-                            }
+                            Err(_) => unreachable!(),
                         }
                     }
                     Err(_) => (),
                 }
             },
             Message::Run => {
+                self.input_completions.clear();
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
                         let program = match compiler::compile(&self.path, &parsed) {
-                            Ok(p) => p,
+                            Ok((_warn, p)) => p,
                             Err(_) => return Task::none(),
                         };
                         // println!("{:#?}", parsed);
