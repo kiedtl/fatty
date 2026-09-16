@@ -11,10 +11,21 @@ use crate::vm::*;
 #[derive(Clone, Debug)]
 pub enum Warning {
     CommandNotFound(LineCol, String),
+    CdNeedsArg(LineCol),
+}
+
+impl Warning {
+    pub fn lc(&self) -> LineCol {
+        match self {
+            Warning::CommandNotFound(lc, _) => *lc,
+            Warning::CdNeedsArg(lc) => *lc,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
-pub enum CompileError { }
+pub enum CompileError {
+}
 
 /// Compiles AST into assembly blocks. First block is the entry one; last block is always an
 /// artificial block that call all the test blocks
@@ -201,7 +212,9 @@ impl Compiler {
                 match command.cmd.as_str() {
                     "cd" => {
                         if command.argv.len() != 1 {
-                            panic!("TODO: handle cd getting wrong number of args");
+                            self.warnings.push(Warning::CdNeedsArg(command.lc));
+                            out.push(Instr::Explode(command.lc, "cd requires 1 argument".into()));
+                            return Ok(());
                         }
                         self.compile_single(flags, path, &command.argv[0], out)?;
                         out.push(Instr::ChangeDir);

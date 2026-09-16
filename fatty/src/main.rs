@@ -242,7 +242,7 @@ struct App {
     slave: OwnedFd,
     control: ControlState,
     input: String,
-    input_compile_error: Option<LineCol>,
+    input_compile_errors: Vec<LineCol>,
     input_completions: Vec<String>,
     execs: Vec<Execution>,
     vars: HashMap<String, bwine::Value<'static>>,
@@ -302,7 +302,7 @@ impl App {
                 completions,
                 control: ControlState::new(),
                 input: String::new(),
-                input_compile_error: None,
+                input_compile_errors: vec![],
                 input_completions: Vec::new(),
                 listing: listing(),
                 listing_last_changed: None,
@@ -330,19 +330,13 @@ impl App {
             Message::Animate => { }
             Message::Input(s, cursor) => {
                 self.input = s;
-                self.input_compile_error = None;
+                self.input_compile_errors.clear();
                 self.input_completions.clear();
                 match parser::parse_str(&self.input) {
                     Ok(parsed) => {
                         match compiler::compile(&self.path, &parsed) {
                             Ok((warnings, blocks)) => {
-                                for warning in warnings {
-                                    match warning {
-                                        compiler::Warning::CommandNotFound(lc, _) => {
-                                            self.input_compile_error = Some(lc);
-                                        }
-                                    }
-                                }
+                                self.input_compile_errors = warnings.iter().map(|w| w.lc()).collect();
 
                                 let value = widgets::input::Value::new(&self.input);
                                 let cursor_start = cursor.start(&value);
@@ -937,7 +931,7 @@ impl App {
         let mut input = input(self.control.mode, "rm -rf /", &self.input)
             .completions(self.input_completions.clone());
 
-        if let Some(LineCol(_, s, e)) = self.input_compile_error {
+        for &LineCol(_, s, e) in &self.input_compile_errors {
             input.add_annotation(s, e);
         }
 

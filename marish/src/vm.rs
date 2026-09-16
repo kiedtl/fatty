@@ -42,6 +42,8 @@ pub enum Instr {
     RecordTestSuccess,
     Assert(LineCol),
 
+    Explode(LineCol, String),
+
     ChangeDir,
 
     /// Execute command in current context
@@ -334,6 +336,9 @@ impl VM {
                 println!("{: <50} \x1b[1;34mPASS\x1b[m", self.test_ctx.current_test.as_ref().unwrap());
                 self.test_ctx.current_test = None;
                 self.test_ctx.successful += 1;
+            },
+            Instr::Explode(lc, message) => {
+                println!("{lc:?}: {message}");
             },
             Instr::Assert(lc) => {
                 let value = pop_value!(self);
@@ -954,6 +959,7 @@ pub fn print_program(p: &[Block]) {
                 Instr::Negate => println!("  - negate"),
                 Instr::Pop => println!("  - pop"),
                 Instr::Return => println!("  - return"),
+                Instr::Explode(lc, s) => println!("  - explode {lc:?} '{s}'"),
             }
         }
     }
