@@ -1241,9 +1241,15 @@ struct MyDirEntry {
 fn listing() -> Vec<MyDirEntry> {
     let mut entries = std::fs::read_dir(".")
         .unwrap()
-        .map(|res| {
-            let d = res.unwrap();
-            let met = d.metadata().unwrap();
+        // XXX: d.metadata().unwrap(), res.unwrap() can fail due to TOCTOU errors. So we filter_map
+        // instead of just map + unwrap().
+        //
+        // Easy example in practice: file is saved, triggers this function; in the meantime Vim's
+        // swap files appear and disappear in a split second, causing a crash.
+        //
+        .filter_map(|res| {
+            let d = res.ok()?;
+            let met = d.metadata().ok()?;
 
             let mode = met.permissions().mode();
             let kind = FileType::from_raw_mode(mode);
@@ -1263,7 +1269,7 @@ fn listing() -> Vec<MyDirEntry> {
                 name.push('/');
             }
 
-            MyDirEntry { mode, kind, uname, size, raw_name, name }
+            Some(MyDirEntry { mode, kind, uname, size, raw_name, name })
         })
         .collect::<Vec<_>>();
     entries.sort_by_key(|i| i.name.clone());
