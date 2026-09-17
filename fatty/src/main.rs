@@ -367,28 +367,43 @@ impl App {
                                 }
 
                                 if let Some(c) = editing_command {
-                                    if cursor_start <= c.lc.1 + c.orig.len() && !c.orig.as_bytes().contains(&b'/') {
+                                    if cursor_start <= c.lc.1 + c.orig.len()
+                                    // Branch 1: User is typing a command. Complete it from $PATH,
+                                    // but only if the path doesn't have a "/" -- then the user is
+                                    // typing out an absolute path.
+                                    {
                                         let mut completions = HashSet::new();
-                                        for path in &self.path {
-                                            match std::fs::read_dir(path) {
-                                                Ok(iter) => {
-                                                    for item in iter {
-                                                        let Ok(item) = item else { continue };
-                                                        if !compiler::is_valid_executable(item.metadata().ok()) {
-                                                            continue;
+                                        if c.orig.as_bytes().contains(&b'/') {
+                                            for c in completer::complete_cmd_dumb(&c.orig) {
+                                                completions.insert(c);
+                                            }
+                                        } else {
+                                            for path in &self.path {
+                                                match std::fs::read_dir(path) {
+                                                    Ok(iter) => {
+                                                        for item in iter {
+                                                            let Ok(item) = item else { continue };
+                                                            if !compiler::is_valid_executable(item.metadata().ok()) {
+                                                                continue;
+                                                            }
+                                                            let fname = item.file_name().to_string_lossy().into_owned();
+                                                            if fname.starts_with(&c.orig) {
+                                                                completions.insert(fname);
+                                                            }
                                                         }
-                                                        let fname = item.file_name().to_string_lossy().into_owned();
-                                                        if fname.starts_with(&c.orig) {
-                                                            completions.insert(fname);
-                                                        }
-                                                    }
-                                                },
-                                                Err(_) => continue,
+                                                    },
+                                                    Err(_) => continue,
+                                                }
                                             }
                                         }
                                         self.input_completions = completions.into_iter().collect();
                                         self.input_completions.sort();
-                                    } else if let Some(p) = &c.path && let Some(completer) = self.completions.registry.get(p) {
+                                    } else if let Some(p) = &c.path
+                                        && let Some(completer) = self.completions.registry.get(p)
+                                    // Branch 2: User is typing arguments after a command which has
+                                    // an associated completion engine. Complete the argument by
+                                    // calling the completion engine.
+                                    {
                                         let full_inp = self.input[c.lc.1..c.lc.2].to_owned();
                                         let cmd = full_inp[..c.orig.len()].to_owned();
                                         let inp = full_inp[c.orig.len()..].to_owned();
@@ -409,11 +424,15 @@ impl App {
                                                 println!("Completion fails");
                                             },
                                         }
-                                    } else {
+                                    } else
+                                    // Branch 3: User is typing arguments and there is no
+                                    // associated engine. Complete it the dumb way, with just file
+                                    // paths in the local directory.
+                                    {
                                         let full_inp = self.input[c.lc.1..c.lc.2].to_owned();
                                         let cmd = &full_inp[..c.orig.len()];
                                         let inp = &full_inp[c.orig.len()..];
-                                        self.input_completions = completer::dumb(cmd, inp, cursor_start);
+                                        self.input_completions = completer::complete_arg_dumb(cmd, inp, cursor_start);
                                     }
                                 }
                             }
