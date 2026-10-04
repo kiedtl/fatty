@@ -53,6 +53,7 @@ use iced::widget::{
     text::{Rich, Span},
     Column,
     Row,
+    void,
 };
 use iced::advanced::text::{Wrapping, Ellipsis};
 
@@ -209,13 +210,21 @@ pub enum ControlMode {
     Normal,
     Insert,
     Term,
+    Leader,
 }
 
 #[derive(Clone, Debug)]
 pub enum ControlMessage {
+    RotateListingMode,
     ChangeMode(ControlMode),
     HistoryUp,
     HistoryDown,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ListingMode {
+    Grid,
+    Table,
 }
 
 #[derive(Clone)]
@@ -252,6 +261,7 @@ struct App {
 
     listing: Vec<MyDirEntry>,
     listing_last_changed: Option<(OsString, Instant)>,
+    listing_mode: Option<ListingMode>,
 
     vsize: cell::Cell<Option<Size>>,
 }
@@ -306,6 +316,7 @@ impl App {
                 input_completions: Vec::new(),
                 listing: listing(),
                 listing_last_changed: None,
+                listing_mode: None,
                 execs: Vec::new(),
                 vars: HashMap::new(),
                 master: Arc::new(pty.controller),
@@ -962,79 +973,100 @@ impl App {
                 .on_submit(Message::Run);
         }
 
+        let listing_pad = Padding { bottom: 5., top: 5., right: 15., left: 5. };
+        let grid_listing: Elem<'_> = match self.listing_mode {
+            Some(ListingMode::Grid) =>
+                scrollable(
+                    container(listing_grid(self))
+                        .padding(listing_pad)
+                        .width(Length::Fill)
+                        .class(CS::WhiteBox)
+                )
+                    .height(Length::FillPortion(3))
+                    .width(Length::Fill)
+                    .into(),
+            _ => void().into(),
+        };
+        let table_listing: Elem<'_> = match self.listing_mode {
+            Some(ListingMode::Table) =>
+                scrollable(
+                    container(listing_table(self))
+                        .padding(listing_pad)
+                        .width(Length::Fill)
+                        //.height(Length::Fill) Fit
+                        .class(CS::WhiteBox)
+                )
+                    .width(Length::FillPortion(1))
+                    .height(Length::Fill)
+                    .into(),
+            _ => void().into(),
+        };
+
         controller::controller(
             &self.control,
             Message::Controller,
             container(
-                column![
+                row![
+                    table_listing,
                     column![
-                        scrollable(
-                            container(listing_grid(self))
-                                .padding(Padding {
-                                    bottom: 5.,
-                                    top: 5.,
-                                    right: 15.,
-                                    left: 5.,
-                                })
+                        column![
+                            grid_listing,
+                            scrollable(
+                                container(jobs)
+                                    .padding(Padding {
+                                        bottom: 5.,
+                                        top: 5.,
+                                        right: 15.,
+                                        left: 5.,
+                                    })
+                                    .width(Length::Fill)
+                                    .class(CS::WhiteBox)
+                            )
+                                .height(Length::FillPortion(1))
                                 .width(Length::Fill)
-                                .class(CS::WhiteBox)
+                                .anchor_bottom()
+                        ]
+                            .spacing(4)
+                            .height(Length::FillPortion(1)),
+                        column![
+                            responsive(move |size| {
+                                self.vsize.set(Some(size));
+                                scrollable(
+                                    container(execs_view())
+                                        .padding(Padding {
+                                            right: 15.,
+                                            ..Default::default()
+                                        })
+                                )
+                                    .anchor_bottom()
+                                    .height(Length::Fill)
+                            }),
+                            input,
+                        ]
+                            .spacing(4.)
+                            .height(Length::FillPortion(3)),
+                        container(
+                            row![
+                                mono(self.get_env("USER", "?").to_string_lossy()),
+                                text("@"),
+                                mono(rustix::system::uname().nodename().to_string_lossy().to_string()),
+                                text(" on "),
+                                mono(
+                                    if let Ok(cwd) = std::env::current_dir() {
+                                        let mut p = cwd.display().to_string();
+                                        let home = self.get_env("HOME", "").to_string_lossy().to_string();
+                                        p = p.replace(&home, "~");
+                                        p
+                                    } else {
+                                        "No known CWD!".to_string()
+                                    }
+                                )
+                            ]
                         )
-                            .height(Length::FillPortion(3))
-                            .width(Length::Fill),
-                        scrollable(
-                            container(jobs)
-                                .padding(Padding {
-                                    bottom: 5.,
-                                    top: 5.,
-                                    right: 15.,
-                                    left: 5.,
-                                })
-                                .width(Length::Fill)
-                                .class(CS::WhiteBox)
-                        )
-                            .height(Length::FillPortion(1))
-                            .width(Length::Fill)
-                            .anchor_bottom()
                     ]
                         .spacing(4)
-                        .height(Length::FillPortion(1)),
-                    column![
-                        responsive(move |size| {
-                            self.vsize.set(Some(size));
-                            scrollable(
-                                container(execs_view())
-                                    .padding(Padding {
-                                        right: 15.,
-                                        ..Default::default()
-                                    })
-                            )
-                                .anchor_bottom()
-                                .height(Length::Fill)
-                        }),
-                        input,
-                    ]
-                        .spacing(4.)
-                        .height(Length::FillPortion(3)),
-                    container(
-                        row![
-                            mono(self.get_env("USER", "?").to_string_lossy()),
-                            text("@"),
-                            mono(rustix::system::uname().nodename().to_string_lossy().to_string()),
-                            text(" on "),
-                            mono(
-                                if let Ok(cwd) = std::env::current_dir() {
-                                    let mut p = cwd.display().to_string();
-                                    let home = self.get_env("HOME", "").to_string_lossy().to_string();
-                                    p = p.replace(&home, "~");
-                                    p
-                                } else {
-                                    "No known CWD!".to_string()
-                                }
-                            )
-                        ]
-                    )
-                ]
-                    .spacing(4)
+                        .width(Length::FillPortion(2))
+                ].spacing(4)
             )
                 .padding(5)
                 .width(Length::Fill)

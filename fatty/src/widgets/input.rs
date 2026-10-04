@@ -420,7 +420,7 @@ where
         let border = Border {
             width: 1.,
             color: style.value,
-            radius: (2.).into(),
+            radius: (if self.mode == ControlMode::Leader { 6. } else { 2. }).into(),
         };
 
         let (cursor, offset, is_selecting) = if let Some(_focus) = state
@@ -764,6 +764,7 @@ where
                     else { return; };
 
                 match self.mode {
+                    ControlMode::Leader => (),
                     ControlMode::Normal => {
                         let mut capture = true;
                         let mut modified = false;
@@ -1429,7 +1430,7 @@ impl<P: text::Paragraph> State<P> {
     pub fn new(cstate: ControlMode) -> Self {
         let is_focused = match cstate {
             ControlMode::Term => None,
-            ControlMode::Normal | ControlMode::Insert => {
+            ControlMode::Leader | ControlMode::Normal | ControlMode::Insert => {
                 let now = Instant::now();
                 Some(Focus {
                     updated_at: now,

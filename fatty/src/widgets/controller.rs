@@ -198,6 +198,14 @@ where
                             self.send(shell, ControlMessage::ChangeMode(ControlMode::Insert));
                             return;
                         },
+                        (ControlMode::Normal, Modifiers::NONE, Some(';')) => {
+                            self.send(shell, ControlMessage::ChangeMode(ControlMode::Leader));
+                            return;
+                        },
+                        (ControlMode::Leader, Modifiers::NONE, Some('t')) => {
+                            self.send(shell, ControlMessage::RotateListingMode);
+                            return;
+                        },
                         _ => (),
                     }
                 }
@@ -285,6 +293,11 @@ pub fn update(app: &mut crate::App, message: ControlMessage) -> iced::Task<crate
     use ControlMessage as CM;
 
     match message {
+        CM::RotateListingMode => app.listing_mode = match app.listing_mode {
+            None => Some(crate::ListingMode::Grid),
+            Some(crate::ListingMode::Grid) => Some(crate::ListingMode::Table),
+            Some(crate::ListingMode::Table) => None,
+        },
         CM::ChangeMode(s) => app.control.mode = s,
         CM::HistoryUp => if app.execs.len() >= 1 {
             let hc = app.control.history_cursor.unwrap_or(app.execs.len());
