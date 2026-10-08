@@ -25,7 +25,7 @@ use iced::{
     Rectangle, Shadow, Size, Vector,
 };
 
-use crate::widgets::scrollable::{self, Scrollable};
+use iced::widget::scrollable::{self, Scrollable};
 
 /// A list of selectable options.
 pub struct Menu<'a, 'b, T, Message, Theme = crate::styles::Theme, Renderer = iced::Renderer>

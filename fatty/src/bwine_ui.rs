@@ -3,7 +3,7 @@ use iced::widget::{container, row, text, space, responsive, table::{self, Table}
 use bwine::Value;
 
 use crate::helpers::*;
-use crate::widgets::scrollable;
+use iced::widget::scrollable;
 use crate::Elem;
 
 pub fn to_iced<'a>(value: &'a Value, vsize: Option<iced::Size>) -> Elem<'a> {

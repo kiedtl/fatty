@@ -1915,3 +1915,34 @@ fn _quad(x: f32, y: f32, w: f32, h: f32) -> renderer::Quad {
         snap: true,
     }
 }
+
+impl Catalog for crate::styles::Theme {
+    type Class<'a> = ();
+
+    fn default<'a>() -> Self::Class<'a> {
+        ()
+    }
+
+    fn style(&self, _class: &Self::Class<'_>, _status: Status) -> Style {
+        Style {
+            container: Default::default(),
+            vertical_rail: Rail {
+                background: None,
+                border: Default::default(),
+                scroller: Scroller {
+                    color: Color::BLACK,
+                    border: Default::default(),
+                },
+            },
+            horizontal_rail: Rail {
+                background: None,
+                border: Default::default(),
+                scroller: Scroller {
+                    color: Color::BLACK,
+                    border: Default::default(),
+                },
+            },
+            gap: None,
+        }
+    }
+}

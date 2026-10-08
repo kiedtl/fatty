@@ -69,7 +69,7 @@ mod completer;
 
 use helpers::*;
 use styles::CS;
-use widgets::scrollable::scrollable;
+use iced::widget::scrollable;
 use widgets::input::input;
 use widgets::controller;
 

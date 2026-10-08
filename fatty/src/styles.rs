@@ -1,9 +1,8 @@
-use iced::{Gradient, Background, Border, border::Radius, Color};
-use iced::widget::{container, button, text_input, table};
+use iced::{Gradient, Background, Border, border::Radius, Color, Shadow};
+use iced::widget::{container, button, text_input, table, scrollable};
 
 use vte::ansi::Rgb;
 use crate::colors::Hsv;
-use crate::widgets::scrollable;
 use crate::widgets::input;
 use crate::widgets::spinnerbar;
 use crate::widgets::menu;
@@ -355,8 +354,7 @@ pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
             ..Default::default()
         },
         scroller: scrollable::Scroller {
-            //background: background::color(t.ac(7)),
-            color: t.ac(7),
+            background: Background::Color(t.ac(7)),
             border: Border {
                 color: t.bg(2),
                 width: 1.,
@@ -366,13 +364,24 @@ pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
         },
     };
 
+    let auto_scroll = scrollable::AutoScroll {
+        background: Background::Color(t.bg(15)),
+        border: Border {
+            radius: RAD,
+            ..Default::default()
+        },
+        shadow: Default::default(),
+        icon: t.fg,
+    };
+
     match s {
         scrollable::Status::Active { .. } => {
             scrollable::Style {
                 container: container::Style::default(),
                 vertical_rail: rail,
                 horizontal_rail: rail,
-                gap: Default::default(),
+                gap: None,
+                auto_scroll,
             }
         },
         scrollable::Status::Hovered {
@@ -382,8 +391,7 @@ pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
         } => {
             let h = scrollable::Rail {
                 scroller: scrollable::Scroller {
-                    //background: background::Color(t.ac(10)),
-                    color: t.ac(9),
+                    background: Background::Color(t.ac(9)),
                     border: Border {
                         color: t.bg(2),
                         width: 1.,
@@ -398,7 +406,8 @@ pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
                 vertical_rail: if isv { h } else { rail },
                 horizontal_rail: if ish { h } else { rail },
                 container: container::Style::default(),
-                gap: Default::default(),
+                gap: None,
+                auto_scroll,
             }
         },
         scrollable::Status::Dragged {
@@ -408,8 +417,7 @@ pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
         } => {
             let h = scrollable::Rail {
                 scroller: scrollable::Scroller {
-                    //background: background::Color(t.ac(10)),
-                    color: t.ac(10),
+                    background: Background::Color(t.ac(10)),
                     border: Border {
                         color: t.bg(2),
                         width: 1.,
@@ -424,7 +432,8 @@ pub fn scrollable_style(t: &Theme, s: scrollable::Status) -> scrollable::Style {
                 vertical_rail: if isv { h } else { rail },
                 horizontal_rail: if ish { h } else { rail },
                 container: container::Style::default(),
-                gap: Default::default(),
+                gap: None,
+                auto_scroll,
             }
         },
     }
