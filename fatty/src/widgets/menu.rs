@@ -21,8 +21,8 @@ use iced::{
         Shell, Widget, Overlay,
     },
     overlay, touch, window,
-    Background, Color, Event, Element, Length, Padding, Pixels, Point, Rectangle,
-    Shadow, Size, Vector,
+    Background, Color, Event, Element, Font, Length, Padding, Pixels, Point,
+    Rectangle, Shadow, Size, Vector,
 };
 
 use crate::widgets::scrollable::{self, Scrollable};
@@ -46,8 +46,9 @@ where
     line_height: text::LineHeight,
     shaping: text::Shaping,
     ellipsis: text::Ellipsis,
-    font: Option<Renderer::Font>,
+    font: Option<Font>,
     class: &'a <Theme as Catalog>::Class<'b>,
+    _ren: std::marker::PhantomData<Renderer>,
 }
 
 impl<'a, 'b, T, Message, Theme, Renderer> Menu<'a, 'b, T, Message, Theme, Renderer>
@@ -84,6 +85,7 @@ where
             ellipsis: text::Ellipsis::default(),
             font: None,
             class,
+            _ren: std::marker::PhantomData,
         }
     }
 
@@ -124,7 +126,7 @@ where
     }
 
     /// Sets the font of the [`Menu`].
-    pub fn font(mut self, font: impl Into<Renderer::Font>) -> Self {
+    pub fn font(mut self, font: impl Into<Font>) -> Self {
         self.font = Some(font.into());
         self
     }
@@ -219,6 +221,7 @@ where
             shaping,
             ellipsis,
             class,
+            ..
         } = menu;
 
         let mut list = Scrollable::new(List {
@@ -336,10 +339,9 @@ where
     }
 }
 
-pub struct List<'a, 'b, T, Message, Theme, Renderer>
+pub struct List<'a, 'b, T, Message, Theme>
 where
     Theme: Catalog,
-    Renderer: text::Renderer,
 {
     options: &'a [T],
     hovered_option: &'a mut Option<usize>,
@@ -351,15 +353,14 @@ where
     line_height: text::LineHeight,
     shaping: text::Shaping,
     ellipsis: text::Ellipsis,
-    font: Option<Renderer::Font>,
+    font: Option<Font>,
     class: &'a <Theme as Catalog>::Class<'b>,
 }
 
-impl<T, M, Th, Ren> List<'_, '_, T, M, Th, Ren>
+impl<T, M, Th> List<'_, '_, T, M, Th>
 where
     T: Clone,
     Th: Catalog,
-    Ren: text::Renderer,
 {
     pub fn hovered_option(&self) -> Option<usize> {
         (*self.hovered_option)
@@ -381,7 +382,7 @@ struct ListState {
 }
 
 impl<T, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
-    for List<'_, '_, T, Message, Theme, Renderer>
+    for List<'_, '_, T, Message, Theme>
 where
     T: Clone,
     Theme: Catalog,
@@ -410,7 +411,7 @@ where
     ) -> layout::Node {
         use std::f32;
 
-        let text_size = self.text_size.unwrap_or_else(|| renderer.default_size());
+        let text_size = self.text_size.unwrap_or_else(|| renderer.text_size());
 
         let text_line_height = self.line_height.to_absolute(text_size);
 
@@ -450,7 +451,7 @@ where
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some(cursor_position) = cursor.position_in(layout.bounds()) {
-                    let text_size = self.text_size.unwrap_or_else(|| renderer.default_size());
+                    let text_size = self.text_size.unwrap_or_else(|| renderer.text_size());
 
                     let option_height =
                         f32::from(self.line_height.to_absolute(text_size)) + self.padding.y();
@@ -472,7 +473,7 @@ where
             }
             Event::Touch(touch::Event::FingerPressed { .. }) => {
                 if let Some(cursor_position) = cursor.position_in(layout.bounds()) {
-                    let text_size = self.text_size.unwrap_or_else(|| renderer.default_size());
+                    let text_size = self.text_size.unwrap_or_else(|| renderer.text_size());
 
                     let option_height =
                         f32::from(self.line_height.to_absolute(text_size)) + self.padding.y();
@@ -532,7 +533,7 @@ where
         let style = Catalog::style(theme, self.class);
         let bounds = layout.bounds();
 
-        let text_size = self.text_size.unwrap_or_else(|| renderer.default_size());
+        let text_size = self.text_size.unwrap_or_else(|| renderer.text_size());
         let option_height = f32::from(self.line_height.to_absolute(text_size)) + self.padding.y();
 
         let offset = viewport.y - bounds.y;
@@ -573,7 +574,7 @@ where
                     bounds: Size::new(bounds.width - self.padding.x(), bounds.height),
                     size: text_size,
                     line_height: self.line_height,
-                    font: self.font.unwrap_or_else(|| renderer.default_font()),
+                    font: self.font.unwrap_or_else(|| renderer.font()),
                     align_x: text::Alignment::Default,
                     align_y: alignment::Vertical::Center,
                     shaping: self.shaping,
@@ -593,7 +594,7 @@ where
     }
 }
 
-impl<'a, 'b, T, Message, Theme, Renderer> From<List<'a, 'b, T, Message, Theme, Renderer>>
+impl<'a, 'b, T, Message, Theme, Renderer> From<List<'a, 'b, T, Message, Theme>>
     for Element<'a, Message, Theme, Renderer>
 where
     T: Clone,
@@ -602,7 +603,7 @@ where
     Renderer: 'a + text::Renderer,
     'b: 'a,
 {
-    fn from(list: List<'a, 'b, T, Message, Theme, Renderer>) -> Self {
+    fn from(list: List<'a, 'b, T, Message, Theme>) -> Self {
         Element::new(list)
     }
 }

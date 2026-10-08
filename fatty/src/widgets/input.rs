@@ -1,6 +1,6 @@
 //! Text inputs display fields that can be filled with text. Copied from Iced.
-use unicode_segmentation::UnicodeSegmentation;
 use std::time::{Instant, Duration};
+use unicode_segmentation::UnicodeSegmentation;
 
 use iced::{
     alignment,
@@ -10,6 +10,7 @@ use iced::{
         layout, renderer,
         mouse::{self, click},
         input_method,
+        graphics::text::Paragraph,
         text::{
             self, Text,
             paragraph::{self, Paragraph as _},
@@ -25,7 +26,7 @@ use iced::{
     touch,
     window,
     Alignment, Background, Border, Color, Element, Event, Length, Padding,
-    Pixels, Point, Rectangle, Size, Vector,
+    Pixels, Point, Rectangle, Size, Vector, Font
 };
 
 use crate::widgets::menu;
@@ -45,7 +46,7 @@ pub fn input<'a, Message, Theme, Renderer>(
 where
     Message: Clone,
     Theme: Catalog + 'a,
-    Renderer: text::Renderer,
+    Renderer: text::Renderer<Paragraph = Paragraph>,
 {
     TextInput::new(mode, placeholder, value)
 }
@@ -60,7 +61,7 @@ where
     id: Option<widget::Id>,
     placeholder: String,
     value: Value,
-    font: Option<Renderer::Font>,
+    font: Option<Font>,
     width: Length,
     padding: Padding,
     size: Option<Pixels>,
@@ -69,12 +70,13 @@ where
     on_input: Option<Box<dyn Fn(String, Cursor) -> Message + 'a>>,
     on_paste: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_submit: Option<Message>,
-    icon: Option<Icon<Renderer::Font>>,
+    icon: Option<Icon<Font>>,
     class: <Theme as Catalog>::Class<'a>,
     last_status: Option<Status>,
     annotations: Vec<Annotation>,
     completions: Vec<String>,
     completion_menu_style: <Theme as menu::Catalog>::Class<'a>,
+    renderer: std::marker::PhantomData<Renderer>,
 }
 
 /// The default [`Padding`] of a [`TextInput`].
@@ -84,7 +86,7 @@ impl<'a, Message, Theme, Renderer> TextInput<'a, Message, Theme, Renderer>
 where
     Message: Clone,
     Theme: Catalog,
-    Renderer: text::Renderer,
+    Renderer: text::Renderer<Paragraph = Paragraph>,
 {
     /// Creates a new [`TextInput`] with the given placeholder and
     /// its current value.
@@ -109,6 +111,7 @@ where
             annotations: Vec::new(),
             completions: Vec::new(),
             completion_menu_style: <Theme as menu::Catalog>::default(),
+            renderer: std::marker::PhantomData,
         }
     }
 
@@ -165,15 +168,13 @@ where
     }
 
     /// Sets the [`Font`] of the [`TextInput`].
-    ///
-    /// [`Font`]: text::Renderer::Font
-    pub fn font(mut self, font: Renderer::Font) -> Self {
+    pub fn font(mut self, font: Font) -> Self {
         self.font = Some(font);
         self
     }
 
     /// Sets the [`Icon`] of the [`TextInput`].
-    pub fn icon(mut self, icon: Icon<Renderer::Font>) -> Self {
+    pub fn icon(mut self, icon: Icon<Font>) -> Self {
         self.icon = Some(icon);
         self
     }
@@ -237,7 +238,7 @@ where
     /// Lays out the [`TextInput`], overriding its [`Value`] if provided.
     ///
     /// [`Renderer`]: text::Renderer
-    pub fn layout(
+    pub fn mylayout(
         &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
@@ -247,8 +248,8 @@ where
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
         let value = value.unwrap_or(&self.value);
 
-        let font = self.font.unwrap_or_else(|| renderer.default_font());
-        let text_size = self.size.unwrap_or_else(|| renderer.default_size());
+        let font = self.font.unwrap_or_else(|| renderer.font());
+        let text_size = self.size.unwrap_or_else(|| renderer.text_size());
         let padding = self.padding.fit(Size::ZERO, limits.max());
         let height = self.line_height.to_absolute(text_size);
 
@@ -283,7 +284,7 @@ where
                 line_height: self.line_height,
                 content: icon.code_point.encode_utf8(&mut content) as &_,
                 font: icon.font,
-                size: icon.size.unwrap_or_else(|| renderer.default_size()),
+                size: icon.size.unwrap_or_else(|| renderer.text_size()),
                 bounds: Size::new(f32::INFINITY, text_bounds.height),
                 align_x: text::Alignment::Center,
                 align_y: alignment::Vertical::Center,
@@ -1165,18 +1166,18 @@ impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
 where
     Message: Clone,
     Theme: Catalog,
-    Renderer: text::Renderer,
+    Renderer: text::Renderer<Paragraph = Paragraph>,
 {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<State<Renderer::Paragraph>>()
+        tree::Tag::of::<State<Paragraph>>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::<Renderer::Paragraph>::new(self.mode))
+        tree::State::new(State::<Paragraph>::new(self.mode))
     }
 
     fn diff(&mut self, tree: &mut Tree) {
-        let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+        let state = tree.state.downcast_mut::<State<Paragraph>>();
 
         // Stop pasting if input becomes disabled
         if self.on_input.is_none() {
@@ -1197,7 +1198,7 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.layout(tree, renderer, limits, None)
+        self.mylayout(tree, renderer, limits, None)
     }
 
     fn operate(
@@ -1284,7 +1285,7 @@ where
         };
 
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
-        let font = self.font.unwrap_or_else(|| renderer.default_font());
+        let font = self.font.unwrap_or_else(|| renderer.font());
         let text_size = self.size.unwrap_or(Pixels::from(13.));
         let padding = 3.;
 
@@ -1349,7 +1350,7 @@ impl<'a, Message, Theme, Renderer> From<TextInput<'a, Message, Theme, Renderer>>
 where
     Message: Clone + 'a,
     Theme: Catalog + 'a,
-    Renderer: text::Renderer + 'a,
+    Renderer: text::Renderer<Paragraph = Paragraph> + 'a,
 {
     fn from(
         text_input: TextInput<'a, Message, Theme, Renderer>,
@@ -1553,7 +1554,7 @@ impl<P: text::Paragraph> operation::Focusable for State<P> {
 //     }
 // }
 
-fn offset<P: text::Paragraph>(text_bounds: Rectangle, value: &Value, state: &State<P>) -> f32 {
+fn offset(text_bounds: Rectangle, value: &Value, state: &State<Paragraph>) -> f32 {
     if state.is_focused() {
         let cursor = state.cursor();
 
@@ -1572,25 +1573,58 @@ fn offset<P: text::Paragraph>(text_bounds: Rectangle, value: &Value, state: &Sta
 }
 
 fn measure_cursor_and_scroll_offset(
-    paragraph: &impl text::Paragraph,
+    paragraph: &Paragraph,
     text_bounds: Rectangle,
     cursor_index: usize,
 ) -> (f32, f32) {
-    let grapheme_position = paragraph
-        .grapheme_position(0, cursor_index)
-        .unwrap_or(Point::ORIGIN);
-
+    let grapheme_position = grapheme_position(paragraph, 0, cursor_index).unwrap_or(Point::ORIGIN);
     let offset = ((grapheme_position.x + 5.0) - text_bounds.width).max(0.0);
-
     (grapheme_position.x, offset)
+}
+
+/// Copied from another place in Iced after grapheme_position was removed.
+fn grapheme_position(
+    paragraph: &Paragraph,
+    line: usize,
+    index: usize,
+) -> Option<Point> {
+    let run = paragraph.buffer().layout_runs().nth(line)?;
+    let hint_factor = paragraph.hint_factor().unwrap_or(1.0);
+    let mut last_start = None;
+    let mut last_grapheme_count = 0;
+    let mut graphemes_seen = 0;
+    let glyph = run
+        .glyphs
+        .iter()
+        .find(|glyph| {
+            if Some(glyph.start) != last_start {
+                last_grapheme_count = run.text[glyph.start..glyph.end].graphemes(false).count();
+                last_start = Some(glyph.start);
+                graphemes_seen += last_grapheme_count;
+            }
+            graphemes_seen >= index
+        })
+        .or_else(|| run.glyphs.last())?;
+    let advance = if index == 0 {
+        0.0
+    } else {
+        glyph.w
+            * (1.0
+                - graphemes_seen.saturating_sub(index) as f32
+                    / last_grapheme_count.max(1) as f32)
+    };
+    Some(Point::new(
+        (glyph.x + glyph.x_offset * glyph.font_size + advance) / hint_factor,
+        (glyph.y - glyph.y_offset * glyph.font_size) / hint_factor,
+    ))
 }
 
 /// Computes the position of the text cursor at the given X coordinate of
 /// a [`TextInput`].
-fn find_cursor_position<P: text::Paragraph>(
+fn find_cursor_position(
     text_bounds: Rectangle,
     value: &Value,
-    state: &State<P>,
+    state: &State<Paragraph>,
     x: f32,
 ) -> Option<usize> {
     let offset = offset(text_bounds, value, state);
@@ -1616,14 +1650,14 @@ fn replace_paragraph<Renderer>(
     state: &mut State<Renderer::Paragraph>,
     layout: Layout<'_>,
     value: &Value,
-    font: Option<Renderer::Font>,
+    font: Option<Font>,
     text_size: Option<Pixels>,
     line_height: text::LineHeight,
 ) where
     Renderer: text::Renderer,
 {
-    let font = font.unwrap_or_else(|| renderer.default_font());
-    let text_size = text_size.unwrap_or_else(|| renderer.default_size());
+    let font = font.unwrap_or_else(|| renderer.font());
+    let text_size = text_size.unwrap_or_else(|| renderer.text_size());
 
     let mut children_layout = layout.children();
     let text_bounds = children_layout.next().unwrap().bounds();

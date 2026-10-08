@@ -6,7 +6,7 @@ use iced::advanced::{Layout, Widget};
 use iced::event::Event;
 use iced::{
     window, Background, Border, Color, Element, Gradient,
-    Length, Rectangle, Size,
+    Length, Rectangle, Size, Font
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -69,7 +69,7 @@ impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for SpinnerBar<Theme>
 where
     Theme: Catalog,
-    Renderer: renderer::Renderer + text::Renderer<Font = iced::Font>,
+    Renderer: renderer::Renderer + text::Renderer,
 {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
@@ -211,7 +211,7 @@ impl<'a, Message, Theme, Renderer> From<SpinnerBar<Theme>>
     for Element<'a, Message, Theme, Renderer>
 where
     Theme: 'a + Catalog,
-    Renderer: 'a + renderer::Renderer + text::Renderer<Font = iced::Font>,
+    Renderer: 'a + renderer::Renderer + text::Renderer,
 {
     fn from(w: SpinnerBar<Theme>) -> Self {
         Self::new(w)

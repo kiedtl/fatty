@@ -45,7 +45,7 @@ impl<'a, Theme, Message> Tty<'a, Theme, Message> {
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Tty<'a, Theme, Message>
 where
-    Renderer: iced::advanced::text::Renderer<Font = iced::Font>,
+    Renderer: iced::advanced::text::Renderer,
 {
     fn tag(&self) -> widget::tree::Tag {
         widget::tree::Tag::of::<CellSize>()
@@ -221,7 +221,7 @@ where
 impl<'a, Message, Theme, Renderer> From<Tty<'a, Theme, Message>>
     for Element<'a, Message, Theme, Renderer>
 where
-    Renderer: iced::advanced::text::Renderer<Font = iced::Font>,
+    Renderer: iced::advanced::text::Renderer,
     Theme: 'a,
     Message: 'a,
 {
