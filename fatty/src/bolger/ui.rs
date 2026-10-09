@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bitflags::bitflags;
 use iced::widget::text::{Span, Rich};
-use iced::widget::span;
+use iced::widget::{void, span};
 
 use crate::bolger::parser::*;
 use crate::helpers::*;
@@ -147,7 +147,7 @@ impl Element {
 
     pub fn to_iced<'a>(&'a self, style: Style, ids: &'a HashMap<Id, Element>) -> crate::Elem<'a> {
         use iced::{Background, Border, Padding, Length, alignment};
-        use iced::widget::{container, row, Row, text, space, responsive, table::{self, Table}};
+        use iced::widget::{container, row, Row, text, space, responsive, table::{self, Table}, Widget};
         use crate::Elem;
 
         match self {
@@ -155,13 +155,11 @@ impl Element {
             Element::Table { columns, rows } => {
                 let columns = columns.iter().enumerate().map(|(col_i, c)| {
                     table::column(thead(c.name.clone()), move |e: &Vec<Option<Element>>| {
-                        let e: Elem<'_> =
-                            if let Some(Some(e)) = e.get(col_i) {
-                                e.to_iced(style, ids)
-                            } else {
-                                space().into()
-                            };
-                        e
+                        if let Some(Some(e)) = e.get(col_i) {
+                            e.to_iced(style, ids)
+                        } else {
+                            void().boxed()
+                        }
                     })
                 }).collect::<Vec<_>>();
 
@@ -171,11 +169,11 @@ impl Element {
                 )
                     .width(Length::Fill)
                     .align_x(alignment::Horizontal::Center)
-                    .into()
+                    .boxed()
             },
             Element::Spinner { tick } => {
                 spinnerbar::SpinnerBar::new(*tick, Default::default())
-                    .into()
+                    .boxed()
             },
             Element::Progress { done, max } => {
                 container(
@@ -214,16 +212,16 @@ impl Element {
                     })
                     .width(Length::Fill)
                     .align_x(alignment::Horizontal::Center)
-                    .into()
+                    .boxed()
             },
-            Element::Column(c) => text(format!("<column {c:?}>")).into(),
+            Element::Column(c) => text(format!("<column {c:?}>")).boxed(),
             Element::Row { items } => {
                 Row::with_children(
                     items.iter().map(|it| it.to_iced(style, ids))
-                ).into()
+                ).boxed()
             },
             Element::Id(id) => ids.get(id).unwrap().to_iced(style, ids),
-            c => Rich::with_spans(vec![c.to_iced_span(style, ids)]).into(),
+            c => Rich::with_spans(vec![c.to_iced_span(style, ids)]).boxed(),
         }
     }
 }

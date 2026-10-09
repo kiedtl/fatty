@@ -177,26 +177,25 @@ impl Default for State {
     }
 }
 
-struct MyOverlay<'a, 'b, Message, Theme, Renderer>
+struct MyOverlay<'a, 'b, T, Message, Theme>
 where
     Theme: Catalog,
-    Renderer: text::Renderer,
 {
     window: Size,
     layout: Layout,
     tree: &'a mut Tree,
-    list: Scrollable<'a, Message, Theme, Renderer>,
+    list: Scrollable<'a, Message, List<'a, 'b, T, Message, Theme>, Theme>,
     class: &'a <Theme as Catalog>::Class<'b>,
 }
 
-impl<'a, 'b, Message, Theme, Renderer> MyOverlay<'a, 'b, Message, Theme, Renderer>
+impl<'a, 'b, T, Message, Theme> MyOverlay<'a, 'b, T, Message, Theme>
 where
+    T: Clone,
     Message: 'a,
     Theme: Catalog + scrollable::Catalog + 'a,
-    Renderer: text::Renderer + 'a,
     'b: 'a,
 {
-    pub fn new<T>(
+    pub fn new<Renderer>(
         position: Point,
         window: Size,
         menu: Menu<'a, 'b, T, Message, Theme, Renderer>,
@@ -205,7 +204,7 @@ where
         renderer: &Renderer,
     ) -> Self
     where
-        T: Clone,
+        Renderer: text::Renderer + 'a,
     {
         let Menu {
             state,
@@ -257,7 +256,7 @@ where
         )
         .width(width);
 
-        state.tree.diff(&mut list as &mut dyn Widget<_, _, _>);
+        state.tree.diff::<_, _, Renderer>(&mut list);
         list.layout(&mut state.tree, renderer, &limits);
 
         let layout = Layout::new(state.tree.size).move_to(if space_below > space_above {
@@ -276,10 +275,11 @@ where
     }
 }
 
-impl<Message, Theme, Renderer> Overlay<Message, Theme, Renderer>
-    for MyOverlay<'_, '_, Message, Theme, Renderer>
+impl<T, Message, Theme, Renderer> Overlay<Message, Theme, Renderer>
+    for MyOverlay<'_, '_, T, Message, Theme>
 where
-    Theme: Catalog,
+    T: Clone,
+    Theme: Catalog + scrollable::Catalog,
     Renderer: text::Renderer,
 {
     fn update(
@@ -404,6 +404,8 @@ where
 struct ListState {
     is_hovered: Option<bool>,
 }
+
+impl<T, Message, Theme> widget::Meta for List<'_, '_, T, Message, Theme> where Theme: Catalog {}
 
 impl<T, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for List<'_, '_, T, Message, Theme>
@@ -618,19 +620,7 @@ where
     }
 }
 
-impl<'a, 'b, T, Message, Theme, Renderer> From<List<'a, 'b, T, Message, Theme>>
-    for Element<'a, Message, Theme, Renderer>
-where
-    T: Clone,
-    Message: 'a,
-    Theme: 'a + Catalog,
-    Renderer: 'a + text::Renderer,
-    'b: 'a,
-{
-    fn from(list: List<'a, 'b, T, Message, Theme>) -> Self {
-        Element::new(list)
-    }
-}
+
 
 /// The appearance of a [`Menu`].
 #[derive(Debug, Clone, Copy, PartialEq)]

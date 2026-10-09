@@ -10,7 +10,7 @@ use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 
 use iced::{alignment, Length, Background, Border, Subscription};
-use iced::widget::{Text, text, Row, row, column, container, responsive};
+use iced::widget::{Text, text, Row, row, column, container, responsive, Widget};
 use iced::advanced::text::IntoFragment;
 use iced::advanced::subscription::{Recipe, EventStream, Hasher};
 
@@ -130,7 +130,7 @@ impl Mode {
             (color_o, bit(0o0004, 'r'), bit(0o0002, 'w'), txt(other_x)),
         ];
 
-        let mut thr = Row::new().spacing(1).width(Length::Shrink);
+        let mut thr: Row<Elem<'a>> = Row::new().spacing(1).width(Length::Shrink);
 
         for (bg, r, w, x) in set {
             thr = thr.push(
@@ -148,10 +148,11 @@ impl Mode {
                         },
                         ..Default::default()
                     }))
+                    .boxed()
             );
         }
 
-        thr.into()
+        thr.boxed()
     }
 }
 

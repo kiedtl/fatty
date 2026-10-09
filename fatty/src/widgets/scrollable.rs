@@ -345,6 +345,13 @@ pub enum Anchor {
     End,
 }
 
+impl<'a, Message, Theme, Renderer> widget::Meta for Scrollable<'a, Message, Theme, Renderer>
+where
+    Theme: Catalog,
+    Renderer: iced::advanced::Renderer,
+{
+}
+
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Scrollable<'a, Message, Theme, Renderer>
 where
@@ -362,7 +369,7 @@ where
     fn diff(&mut self, tree: &mut Tree) {
         tree.diff_children(std::slice::from_mut(&mut self.content));
 
-        let size = self.content.as_widget().size();
+        let size = self.content.size();
 
         if self.width.is_none() || self.direction.horizontal().is_none() {
             self.width = Some(size.width);
@@ -431,7 +438,7 @@ where
                     ),
                 );
 
-                self.content.as_widget_mut().layout(
+                self.content.layout(
                     tree,
                     renderer,
                     &child_limits,
@@ -473,7 +480,7 @@ where
 
         operation.container(id, content_bounds, &viewport);
         operation.traverse(&mut |operation| {
-            self.content.as_widget_mut().operate(
+            self.content.operate(
                 content_tree,
                 content_layout,
                 &viewport,
@@ -708,7 +715,7 @@ where
 
                 // let had_input_method = shell.input_method().is_enabled();
 
-                self.content.as_widget_mut().update(
+                self.content.update(
                     content_tree,
                     event,
                     content,
@@ -944,7 +951,7 @@ where
                 renderer.with_translation(
                     Vector::new(-translation.x, -translation.y),
                     |renderer| {
-                        self.content.as_widget().draw(
+                        self.content.draw(
                             content_tree,
                             renderer,
                             theme,
@@ -1050,7 +1057,7 @@ where
                 },
             );
         } else {
-            self.content.as_widget().draw(
+            self.content.draw(
                 content_tree,
                 renderer,
                 theme,
@@ -1104,7 +1111,7 @@ where
                 _ => mouse::Cursor::Unavailable,
             };
 
-            self.content.as_widget().mouse_interaction(
+            self.content.mouse_interaction(
                 content_tree,
                 content_layout,
                 cursor,
@@ -1139,7 +1146,7 @@ where
 
         let (content_layout, content_tree) = layout.iter_mut(&mut tree.children).next().unwrap();
 
-        self.content.as_widget_mut().overlay(
+        self.content.overlay(
             content_tree,
             content_layout,
             renderer,
@@ -1150,18 +1157,18 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer>
-    From<Scrollable<'a, Message, Theme, Renderer>>
-    for Element<'a, Message, Theme, Renderer>
+impl<'a, Message, Theme, Renderer> Scrollable<'a, Message, Theme, Renderer>
 where
-    Message: 'a,
-    Theme: 'a + Catalog,
-    Renderer: 'a + iced::advanced::Renderer,
+    Theme: Catalog,
+    Renderer: iced::advanced::Renderer,
 {
-    fn from(
-        text_input: Scrollable<'a, Message, Theme, Renderer>,
-    ) -> Element<'a, Message, Theme, Renderer> {
-        Element::new(text_input)
+    pub fn boxed(self) -> Element<'a, Message, Theme, Renderer>
+    where
+        Message: 'a,
+        Theme: 'a,
+        Renderer: 'a,
+    {
+        iced::Widget::boxed(self)
     }
 }
 

@@ -16,7 +16,7 @@ use iced::{
 pub fn controller<'a, Message, Renderer: advanced::Renderer>(
     state: &'a ControlState,
     control_message: impl Fn(ControlMessage) -> Message + 'static,
-    content: impl Into<Element<'a, Message, crate::styles::Theme, Renderer>>,
+    content: impl Widget<Message, crate::styles::Theme, Renderer> + 'a,
 ) -> Controller<'a, Message, Renderer> {
     Controller::new(state, content, Box::new(control_message))
 }
@@ -37,15 +37,12 @@ where
 }
 
 impl<'a, Message, Renderer: advanced::Renderer> Controller<'a, Message, Renderer> {
-    pub fn new<T>(
+    pub fn new(
         state: &'a ControlState,
-        content: T,
+        content: impl Widget<Message, crate::styles::Theme, Renderer> + 'a,
         control_message: Box<dyn Fn(ControlMessage) -> Message>,
-    ) -> Self
-    where
-        T: Into<Element<'a, Message, crate::styles::Theme, Renderer>>,
-    {
-        let content = content.into();
+    ) -> Self {
+        let content = iced::Widget::boxed(content);
 
         Controller {
             state,
@@ -97,6 +94,19 @@ impl<'a, Message, Renderer: advanced::Renderer> Controller<'a, Message, Renderer
     fn send(&self, shell: &mut Shell<'_, Message>, m: ControlMessage) {
         shell.publish((self.control_message)(m));
     }
+
+    pub fn boxed(self) -> Element<'a, Message, crate::styles::Theme, Renderer>
+    where
+        Message: 'a,
+        Renderer: 'a + advanced::Renderer,
+    {
+        iced::Widget::boxed(self)
+    }
+}
+
+impl<'a, Message, Renderer: advanced::Renderer> widget::Meta
+    for Controller<'a, Message, Renderer>
+{
 }
 
 impl<'a, Message, Renderer> Widget<Message, crate::styles::Theme, Renderer>
@@ -105,11 +115,11 @@ where
     Renderer: advanced::Renderer,
 {
     fn tag(&self) -> tree::Tag {
-        self.content.as_widget().tag()
+        self.content.tag()
     }
 
     fn state(&self) -> tree::State {
-        self.content.as_widget().state()
+        self.content.state()
     }
 
     fn diff(&mut self, tree: &mut Tree) {
@@ -138,7 +148,6 @@ where
             Padding::ZERO,
             |tree, limits| {
                 self.content
-                    .as_widget_mut()
                     .layout(tree, renderer, &limits.loose());
 
                 tree.size
@@ -171,7 +180,7 @@ where
         operation.traverse(
             &mut |operation| {
                 let (layout, tree) = layout.iter_mut(&mut tree.children).next().unwrap();
-                self.content.as_widget_mut().operate(
+                self.content.operate(
                     tree,
                     layout,
                     &viewport,
@@ -234,7 +243,7 @@ where
         }
 
         let (layout, tree) = layout.iter_mut(&mut tree.children).next().unwrap();
-        self.content.as_widget_mut().update(
+        self.content.update(
             tree,
             event,
             layout,
@@ -254,7 +263,7 @@ where
         renderer: &Renderer,
     ) -> mouse::Interaction {
         let (layout, tree) = layout.iter(&tree.children).next().unwrap();
-        self.content.as_widget().mouse_interaction(
+        self.content.mouse_interaction(
             tree,
             layout,
             cursor,
@@ -278,7 +287,7 @@ where
         if let Some(clipped_viewport) = bounds.intersection(viewport) {
             let viewport = if self.clip { &clipped_viewport } else { viewport };
             let (layout, tree) = layout.iter(&tree.children).next().unwrap();
-            self.content.as_widget().draw(tree, renderer, theme, &renderer_style, layout, cursor, viewport);
+            self.content.draw(tree, renderer, theme, &renderer_style, layout, cursor, viewport);
         }
     }
 
@@ -292,7 +301,7 @@ where
         window: Size,
     ) -> Vec<overlay::Element<'b, Message, crate::styles::Theme, Renderer>> {
         let (layout, tree) = layout.iter_mut(&mut tree.children).next().unwrap();
-        self.content.as_widget_mut().overlay(
+        self.content.overlay(
             tree,
             layout,
             renderer,
@@ -303,16 +312,7 @@ where
     }
 }
 
-impl<'a, Message, Renderer> From<Controller<'a, Message, Renderer>>
-    for Element<'a, Message, crate::styles::Theme, Renderer>
-where
-    Message: 'a,
-    Renderer: 'a + advanced::Renderer,
-{
-    fn from(column: Controller<'a, Message, Renderer>) -> Element<'a, Message, crate::styles::Theme, Renderer> {
-        Element::new(column)
-    }
-}
+
 
 pub fn update(app: &mut crate::App, message: ControlMessage) -> iced::Task<crate::Message> {
     use ControlMessage as CM;

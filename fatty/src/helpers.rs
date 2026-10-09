@@ -8,26 +8,26 @@ use iced::widget::{text, Text, Column};
 #[macro_export]
 macro_rules! mycolumn {
     (@build $col:expr; if let $pat:pat = $val:expr => $item:expr, $($rest:tt)*) => { // if let p = v => item (more items later)
-        mycolumn!(@build (if let $pat = $val { $col.push($item) } else { $col }); $($rest)*)
+        mycolumn!(@build (if let $pat = $val { $col.push(::iced::advanced::Widget::_boxed($item)) } else { $col }); $($rest)*)
     };
     (@build $col:expr; if let $pat:pat = $val:expr => $item:expr) => { // if let p = v => item (last item)
-        if let $pat = $val { $col.push($item) } else { $col }
+        if let $pat = $val { $col.push(::iced::advanced::Widget::_boxed($item)) } else { $col }
     };
     (@build $col:expr; if $cond:expr => $item:expr, $($rest:tt)*) => { // if cond => item (more items later)
-        mycolumn!(@build (if $cond { $col.push($item) } else { $col }); $($rest)*)
+        mycolumn!(@build (if $cond { $col.push(::iced::advanced::Widget::_boxed($item)) } else { $col }); $($rest)*)
     };
     (@build $col:expr; if $cond:expr => $item:expr) => { // if cond => item (last item)
-        if $cond { $col.push($item) } else { $col }
+        if $cond { $col.push(::iced::advanced::Widget::_boxed($item)) } else { $col }
     };
     (@build $col:expr; $item:expr, $($rest:tt)*) => { // plain item (more items later)
-        mycolumn!(@build $col.push($item); $($rest)*)
+        mycolumn!(@build $col.push(::iced::advanced::Widget::_boxed($item)); $($rest)*)
     };
     (@build $col:expr; $item:expr) => { // last item
-        $col.push($item)
+        $col.push(::iced::advanced::Widget::_boxed($item))
     };
     (@build $col:expr; ) => { $col }; // nothing left
     ($($tail:tt)*) => {{ // entry point
-        mycolumn!(@build Column::new(); $($tail)*)
+        mycolumn!(@build Column::<crate::Elem<'_>>::new(); $($tail)*)
     }};
 }
 

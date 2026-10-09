@@ -54,6 +54,7 @@ use iced::widget::{
     Column,
     Row,
     void,
+    Widget,
 };
 use iced::advanced::text::{Wrapping, Ellipsis};
 
@@ -764,13 +765,12 @@ impl App {
                             .ellipsis(Ellipsis::End)
                     }),
                     table::column(/* thead("size") */space(), |d: &MyDirEntry| {
-                        let e: Elem<'_> = if d.kind == FileType::Directory {
-                            space().into()
+                        if d.kind == FileType::Directory {
+                            space().boxed()
                         } else {
                             mono(utils::fmt_size(d.size))
-                                .into()
-                        };
-                        e
+                                .boxed()
+                        }
                     }),
                     table::column(/* thead("name") */space(), |d: &MyDirEntry| {
                         container(
@@ -789,7 +789,7 @@ impl App {
                 .separator_y(0)
                 .padding_y(0)
                 .padding_x(5)
-                .into()
+                .boxed()
         }
 
         fn listing_grid<'a>(app: &'a App) -> Elem<'a> {
@@ -833,7 +833,7 @@ impl App {
                     )
                         .class(CS::GrayBox)
                         .padding(3)
-                        .into()
+                        .boxed()
                 }))
                     .spacing(4)
                     .height(Length::Shrink)
@@ -841,25 +841,25 @@ impl App {
             })
                 .width(Length::Fill)
                 .height(Length::Shrink)
-                .into()
+                .boxed()
         }
 
-        let mut jobs = Column::new()
+        let mut jobs: Column<Elem<'_>> = Column::new()
             .spacing(1);
 
         for exec in &self.execs {
             for job in &exec.jobs {
                 jobs = jobs.push(
                     container({
-                        let e: Elem<'_> = match &*job.status.borrow() {
+                        match &*job.status.borrow() {
                             VMStatus::Waiting {
                                 item: vm::RunPipelineItem::Command(c),
                                 on: vm::WaitingOn2::Pid(pid)
-                            } => text(format!("{} ({})", c.orig.clone(), pid)).into(),
+                            } => text(format!("{} ({})", c.orig.clone(), pid)).boxed(),
                             VMStatus::Waiting {
                                 item: vm::RunPipelineItem::Where { lc, .. },
                                 ..
-                            } => text(lc.get(&exec.cmdline)).into(),
+                            } => text(lc.get(&exec.cmdline)).boxed(),
                             VMStatus::Waiting { .. } => unreachable!(),
                             VMStatus::Done { command: Some(command), reason }
                             | VMStatus::Resolved { command: Some(command), reason: Some(reason) }
@@ -867,21 +867,21 @@ impl App {
                                     text(command.orig.clone())
                                         .width(Length::Fill),
                                     exit_reason(Some(*reason)),
-                                ].into(),
+                                ].boxed(),
                             VMStatus::None | VMStatus::Resolved { .. } | VMStatus::Done { .. }
-                                => text("...").into(),
-                        };
-                        e
+                                => text("...").boxed(),
+                        }
                     })
                         .class(CS::Box)
                         .padding(3)
                         .width(Length::Fill)
+                        .boxed()
                 );
             }
         }
 
         let execs_view = move || {
-            let mut col = Column::new()
+            let mut col: Column<Elem<'_>> = Column::new()
                 .spacing(1);
 
             for (i, exec) in self.execs.iter().enumerate() {
@@ -897,8 +897,8 @@ impl App {
                             .class(CS::Box)
                             .padding(3),
                         if !exec.document.elements.is_empty() {
-                            let e: Elem<'_> = scrollable({
-                                let mut uis = Column::new()
+                            scrollable({
+                                let mut uis: Column<Elem<'_>> = Column::new()
                                     .spacing(0);
                                 let mut spans = Vec::new();
 
@@ -907,6 +907,7 @@ impl App {
                                         uis = uis.push(
                                             Rich::with_spans(std::mem::take(&mut spans))
                                                 .on_link_click(iced::never)
+                                                .boxed()
                                         );
                                         uis = uis.push(uielem.to_iced(Default::default(), &exec.document.ids));
                                     } else {
@@ -914,12 +915,10 @@ impl App {
                                     }
                                 }
 
-                                let e: Elem<'_> = uis.into();
-                                e
-                            }).into();
-                            e
+                                uis
+                            }).boxed()
                         } else if let Some(object) = &exec.bwine_object {
-                            scrollable(bwine_ui::to_iced(object, self.vsize.get())).into()
+                            scrollable(bwine_ui::to_iced(object, self.vsize.get())).boxed()
                         } else {
                             container(
                                 widgets::tty::Tty::new(
@@ -933,7 +932,7 @@ impl App {
                             )
                                 .padding(1)
                                 .width(Length::Fill)
-                                .into()
+                                .boxed()
                         },
                         Column::with_children(
                             exec.stack.iter().map(|item| {
@@ -951,7 +950,7 @@ impl App {
                         //     }
                         //     s
                         // }),
-                    ],
+                    ].boxed(),
                 );
             }
 
@@ -974,7 +973,7 @@ impl App {
         }
 
         let listing_pad = Padding { bottom: 5., top: 5., right: 15., left: 5. };
-        let grid_listing: Elem<'_> = match self.listing_mode {
+        let grid_listing = match self.listing_mode {
             Some(ListingMode::Grid) =>
                 scrollable(
                     container(listing_grid(self))
@@ -984,10 +983,10 @@ impl App {
                 )
                     .height(Length::FillPortion(3))
                     .width(Length::Fill)
-                    .into(),
-            _ => void().into(),
+                    .boxed(),
+            _ => void().boxed(),
         };
-        let table_listing: Elem<'_> = match self.listing_mode {
+        let table_listing = match self.listing_mode {
             Some(ListingMode::Table) =>
                 scrollable(
                     container(listing_table(self))
@@ -998,8 +997,8 @@ impl App {
                 )
                     .width(Length::FillPortion(1))
                     .height(Length::Fill)
-                    .into(),
-            _ => void().into(),
+                    .boxed(),
+            _ => void().boxed(),
         };
 
         controller::controller(
@@ -1075,7 +1074,7 @@ impl App {
         )
             .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .boxed()
     }
 }
 

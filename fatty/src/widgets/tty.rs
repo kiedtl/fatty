@@ -42,6 +42,8 @@ impl<'a, Theme, Message> Tty<'a, Theme, Message> {
     }
 }
 
+impl<'a, Theme, Message> widget::Meta for Tty<'a, Theme, Message> {}
+
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Tty<'a, Theme, Message>
 where
@@ -218,14 +220,13 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer> From<Tty<'a, Theme, Message>>
-    for Element<'a, Message, Theme, Renderer>
-where
-    Renderer: iced::advanced::text::Renderer,
-    Theme: 'a,
-    Message: 'a,
-{
-    fn from(view: Tty<'a, Theme, Message>) -> Self {
-        Element::new(view)
+impl<'a, Theme, Message> Tty<'a, Theme, Message> {
+    pub fn boxed<Renderer>(self) -> Element<'a, Message, Theme, Renderer>
+    where
+        Renderer: iced::advanced::text::Renderer + 'a,
+        Theme: 'a,
+        Message: 'a,
+    {
+        iced::Widget::boxed(self)
     }
 }

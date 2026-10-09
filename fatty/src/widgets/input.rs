@@ -1166,6 +1166,8 @@ where
     }
 }
 
+impl<Message, Theme: Catalog, Renderer: text::Renderer> widget::Meta for TextInput<'_, Message, Theme, Renderer> {}
+
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for TextInput<'_, Message, Theme, Renderer>
 where
@@ -1353,17 +1355,14 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer> From<TextInput<'a, Message, Theme, Renderer>>
-    for Element<'a, Message, Theme, Renderer>
-where
-    Message: Clone + 'a,
-    Theme: Catalog + 'a,
-    Renderer: text::Renderer<Paragraph = Paragraph> + 'a,
-{
-    fn from(
-        text_input: TextInput<'a, Message, Theme, Renderer>,
-    ) -> Element<'a, Message, Theme, Renderer> {
-        Element::new(text_input)
+impl<'a, Message, Theme: Catalog, Renderer: text::Renderer> TextInput<'a, Message, Theme, Renderer> {
+    pub fn boxed(self) -> Element<'a, Message, Theme, Renderer>
+    where
+        Message: Clone + 'a,
+        Theme: Catalog + 'a,
+        Renderer: text::Renderer<Paragraph = Paragraph> + 'a,
+    {
+        iced::Widget::boxed(self)
     }
 }
 

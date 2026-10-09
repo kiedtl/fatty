@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use iced::advanced::widget::tree::{self, Tree};
-use iced::advanced::{layout, mouse, renderer, text};
+use iced::advanced::{layout, mouse, renderer, text, widget};
 use iced::advanced::{Layout, Widget};
 use iced::event::Event;
 use iced::{
@@ -64,6 +64,8 @@ pub trait Catalog {
 }
 
 struct State {}
+
+impl<Theme: Catalog> widget::Meta for SpinnerBar<Theme> {}
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for SpinnerBar<Theme>
@@ -207,13 +209,12 @@ fn draw_shuffle<R: renderer::Renderer>(
     )
 }
 
-impl<'a, Message, Theme, Renderer> From<SpinnerBar<Theme>>
-    for Element<'a, Message, Theme, Renderer>
-where
-    Theme: 'a + Catalog,
-    Renderer: 'a + renderer::Renderer + text::Renderer,
-{
-    fn from(w: SpinnerBar<Theme>) -> Self {
-        Self::new(w)
+impl<Theme: Catalog> SpinnerBar<Theme> {
+    pub fn boxed<'a, Message, Renderer>(self) -> Element<'a, Message, Theme, Renderer>
+    where
+        Theme: 'a + Catalog,
+        Renderer: 'a + renderer::Renderer + text::Renderer,
+    {
+        iced::Widget::boxed(self)
     }
 }

@@ -1,5 +1,5 @@
 use iced::{Background, Border, Padding, Length, alignment};
-use iced::widget::{container, row, text, space, responsive, table::{self, Table}, grid, column};
+use iced::widget::{container, row, text, void, space, responsive, table::{self, Table}, grid, column, Widget};
 use bwine::Value;
 
 use crate::helpers::*;
@@ -8,11 +8,11 @@ use crate::Elem;
 
 pub fn to_iced<'a>(value: &'a Value, vsize: Option<iced::Size>) -> Elem<'a> {
     match value {
-        Value::Path(p) => text(p.display().to_string()).into(),
-        Value::Int(int) => text(int.to_string()).into(),
-        Value::Bytes(bytes) => text(String::from_utf8_lossy(&bytes[..(50).min(bytes.len())])).into(),
-        Value::Text(value) => text(value.to_string()).into(),
-        Value::Array(values) => grid(values.iter().map(|v| to_iced(v, vsize))).into(),
+        Value::Path(p) => text(p.display().to_string()).boxed(),
+        Value::Int(int) => text(int.to_string()).boxed(),
+        Value::Bytes(bytes) => text(String::from_utf8_lossy(&bytes[..(50).min(bytes.len())])).boxed(),
+        Value::Text(value) => text(value.to_string()).boxed(),
+        Value::Array(values) => grid(values.iter().map(|v| to_iced(v, vsize))).boxed(),
         Value::Map(rows) => {
             let columns = [
                 table::column(thead("field"), move |(field, _): &(Value, Value)| to_iced(field, vsize)),
@@ -31,27 +31,25 @@ pub fn to_iced<'a>(value: &'a Value, vsize: Option<iced::Size>) -> Elem<'a> {
             scrollable::Scrollable::with_direction(
                 Table::new(columns, rows).padding_y(1),
                 dir
-            ).into()
+            ).boxed()
         },
         Value::Tag(tag, value) => column![
             text(format!("Tag: {tag}")),
             to_iced(value, vsize),
-        ].spacing(2).into(),
-        Value::Float(float) => text(float.to_string()).into(),
-        Value::Bool(value) => text(value.to_string()).into(),
-        Value::Null => text("nil").into(),
-        Value::Undefined => text("undefined").into(),
-        Value::Simple(v) => text(format!("{v:0>2X}")).into(),
+        ].spacing(2).boxed(),
+        Value::Float(float) => text(float.to_string()).boxed(),
+        Value::Bool(value) => text(value.to_string()).boxed(),
+        Value::Null => text("nil").boxed(),
+        Value::Undefined => text("undefined").boxed(),
+        Value::Simple(v) => text(format!("{v:0>2X}")).boxed(),
         Value::Table { header, rows } => {
             let columns = header.iter().enumerate().map(|(col_i, c)| {
                 table::column(to_iced(c, vsize), move |e: &Vec<Value>| {
-                    let e: Elem<'_> =
-                        if let Some(e) = e.get(col_i) {
-                            to_iced(e, vsize)
-                        } else {
-                            space().into()
-                        };
-                    e
+                    if let Some(e) = e.get(col_i) {
+                        to_iced(e, vsize)
+                    } else {
+                        void().boxed()
+                    }
                 })
             }).collect::<Vec<_>>();
 
@@ -83,12 +81,12 @@ pub fn to_iced<'a>(value: &'a Value, vsize: Option<iced::Size>) -> Elem<'a> {
                 dir
             )
                 .height(height)
-                .into()
+                .boxed()
         },
         Value::Timestamp(t) => {
             use chrono::{Utc, DateTime};
             let d = DateTime::<Utc>::from_timestamp_millis(*t).unwrap();
-            text(d.to_rfc3339()).into()
+            text(d.to_rfc3339()).boxed()
         }
     }
 }
