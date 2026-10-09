@@ -250,7 +250,7 @@ where
 
         let font = self.font.unwrap_or_else(|| renderer.font());
         let text_size = self.size.unwrap_or_else(|| renderer.text_size());
-        let padding = self.padding.fit(Size::ZERO, limits.max());
+        let padding = self.padding.fit(Size::ZERO, limits.max);
         let height = self.line_height.to_absolute(text_size);
 
         let limits = limits.width(self.width).shrink(padding);
@@ -1205,6 +1205,7 @@ where
         &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
+        _viewport: &Rectangle,
         _renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
@@ -1275,13 +1276,14 @@ where
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'_>,
+        layout: Layout<'b>,
         renderer: &Renderer,
-        viewport: &Rectangle,
+        _viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        window: Size,
+    ) -> Vec<overlay::Element<'b, Message, Theme, Renderer>> {
         let Some(on_input) = &self.on_input else {
-            return None;
+            return Vec::new();
         };
 
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
@@ -1290,7 +1292,7 @@ where
         let padding = 3.;
 
         if self.completions.is_empty() || state.is_focused.is_none() {
-            return None;
+            return Vec::new();
         }
 
         let bounds = layout.bounds();
@@ -1317,12 +1319,13 @@ where
             .text_size(text_size)
             .font(font);
 
-        Some(menu.overlay(
+        vec![menu.overlay(
+            renderer,
             layout.position() + translation,
-            *viewport,
+            window,
             bounds.height,
             Length::Shrink,
-        ))
+        )]
     }
 
     fn mouse_interaction(

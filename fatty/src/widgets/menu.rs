@@ -139,17 +139,19 @@ where
     /// dimensions of the [`Menu`].
     pub fn overlay(
         self,
+        renderer: &Renderer,
         position: Point,
-        viewport: Rectangle,
+        window: Size,
         target_height: f32,
         menu_height: Length,
     ) -> overlay::Element<'a, Message, Theme, Renderer> {
         overlay::Element::new(Box::new(MyOverlay::new(
             position,
-            viewport,
+            window,
             self,
             target_height,
             menu_height,
+            renderer,
         )))
     }
 }
@@ -158,6 +160,7 @@ where
 #[derive(Debug)]
 pub struct State {
     tree: Tree,
+    layout: layout::Node,
 }
 
 impl State {
@@ -165,6 +168,7 @@ impl State {
     pub fn new() -> Self {
         Self {
             tree: Tree::empty(),
+            layout: layout::Node::new(Size::ZERO),
         }
     }
 }
@@ -180,12 +184,10 @@ where
     Theme: Catalog,
     Renderer: text::Renderer,
 {
-    position: Point,
-    viewport: Rectangle,
+    window: Size,
+    layout: Layout<'a>,
     tree: &'a mut Tree,
     list: Scrollable<'a, Message, Theme, Renderer>,
-    width: f32,
-    target_height: f32,
     class: &'a <Theme as Catalog>::Class<'b>,
 }
 
@@ -198,10 +200,11 @@ where
 {
     pub fn new<T>(
         position: Point,
-        viewport: Rectangle,
+        window: Size,
         menu: Menu<'a, 'b, T, Message, Theme, Renderer>,
         target_height: f32,
         menu_height: Length,
+        renderer: &Renderer,
     ) -> Self
     where
         T: Clone,
@@ -240,15 +243,36 @@ where
         })
         .height(menu_height);
 
+        let space_below = window.height - (position.y + target_height);
+        let space_above = position.y;
+
+        let limits = layout::Limits::new(
+            Size::ZERO,
+            Size::new(
+                window.width - position.x,
+                if space_below > space_above {
+                    space_below
+                } else {
+                    space_above
+                },
+            ),
+        )
+        .width(width);
+
         state.tree.diff(&mut list as &mut dyn Widget<_, _, _>);
+        state.layout = list.layout(&mut state.tree, renderer, &limits);
+
+        let layout = Layout::new(&state.layout).move_to(if space_below > space_above {
+            position + Vector::new(0.0, target_height)
+        } else {
+            position - Vector::new(0.0, state.layout.size().height)
+        });
 
         Self {
-            position,
-            viewport,
+            layout,
+            window,
             tree: &mut state.tree,
             list,
-            width,
-            target_height,
             class,
         }
     }
@@ -260,55 +284,56 @@ where
     Theme: Catalog,
     Renderer: text::Renderer,
 {
-    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
-        let space_below = bounds.height - (self.position.y + self.target_height);
-        let space_above = self.position.y;
-
-        let limits = layout::Limits::new(
-            Size::ZERO,
-            Size::new(
-                bounds.width - self.position.x,
-                if space_below > space_above {
-                    space_below
-                } else {
-                    space_above
-                },
-            ),
-        )
-        .width(self.width);
-
-        let node = self.list.layout(self.tree, renderer, &limits);
-        let size = node.size();
-
-        node.move_to(if space_below > space_above {
-            self.position + Vector::new(0.0, self.target_height)
-        } else {
-            self.position - Vector::new(0.0, size.height)
-        })
-    }
-
     fn update(
         &mut self,
         event: &Event,
-        layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
     ) {
-        let bounds = layout.bounds();
-
-        self.list
-            .update(self.tree, event, layout, cursor, renderer, shell, &bounds);
+        self.list.update(
+            self.tree,
+            event,
+            self.layout,
+            cursor,
+            renderer,
+            shell,
+            &self.layout.bounds(),
+        );
     }
 
     fn mouse_interaction(
         &self,
-        layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        self.list
-            .mouse_interaction(self.tree, layout, cursor, &self.viewport, renderer)
+        let interaction = self.list.mouse_interaction(
+            self.tree,
+            self.layout,
+            cursor,
+            &Rectangle::with_size(self.window),
+            renderer,
+        );
+
+        if interaction == mouse::Interaction::None && cursor.is_over(self.layout.bounds()) {
+            mouse::Interaction::Idle
+        } else {
+            interaction
+        }
+    }
+
+    fn operate(
+        &mut self,
+        renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.list.operate(
+            self.tree,
+            self.layout,
+            &self.layout.bounds(),
+            renderer,
+            operation,
+        );
     }
 
     fn draw(
@@ -316,26 +341,27 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         defaults: &renderer::Style,
-        layout: Layout<'_>,
         cursor: mouse::Cursor,
     ) {
-        let bounds = layout.bounds();
+        let bounds = self.layout.bounds();
 
         let style = Catalog::style(theme, self.class);
 
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds,
-                border: style.border,
-                shadow: style.shadow,
-                ..renderer::Quad::default()
-            },
-            style.background,
-        );
+        renderer.with_layer(bounds, |renderer| {
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds,
+                    border: style.border,
+                    shadow: style.shadow,
+                    ..renderer::Quad::default()
+                },
+                style.background,
+            );
 
-        self.list.draw(
-            self.tree, renderer, theme, defaults, layout, cursor, &bounds,
-        );
+            self.list.draw(
+                self.tree, renderer, theme, defaults, self.layout, cursor, &bounds,
+            );
+        });
     }
 }
 

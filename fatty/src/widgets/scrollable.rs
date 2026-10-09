@@ -415,17 +415,17 @@ where
             },
             |limits| {
                 let child_limits = layout::Limits::new(
-                    Size::new(limits.min().width, limits.min().height),
+                    Size::new(limits.min.width, limits.min.height),
                     Size::new(
                         if self.direction.horizontal().is_some() {
                             f32::INFINITY
                         } else {
-                            limits.max().width
+                            limits.max.width
                         },
                         if self.direction.vertical().is_some() {
                             f32::MAX
                         } else {
-                            limits.max().height
+                            limits.max.height
                         },
                     ),
                 );
@@ -443,6 +443,7 @@ where
         &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
+        viewport: &Rectangle,
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
@@ -456,13 +457,23 @@ where
         let id = self.id.as_ref().map(|id| &id.0);
 
         operation.custom(id, bounds, state);
-        operation.scrollable(id, bounds, content_bounds, translation, state);
+        operation.scrollable(id, bounds, content_bounds.size(), translation, state);
 
-        operation.container(id, bounds);
+        let visible_bounds = bounds.intersection(viewport);
+        let viewport = visible_bounds
+            .map(|visible_bounds| Rectangle {
+                y: visible_bounds.y + translation.y,
+                x: visible_bounds.x + translation.x,
+                ..visible_bounds
+            })
+            .unwrap_or_default();
+
+        operation.container(id, content_bounds, &viewport);
         operation.traverse(&mut |operation| {
             self.content.as_widget_mut().operate(
                 &mut tree.children[0],
-                layout.children().next().unwrap(),
+                content_layout,
+                &viewport,
                 renderer,
                 operation,
             );
@@ -1110,7 +1121,8 @@ where
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        window: Size,
+    ) -> Vec<overlay::Element<'b, Message, Theme, Renderer>> {
         let bounds = layout.bounds();
         let content_layout = layout.children().next().unwrap();
         let content_bounds = content_layout.bounds();
@@ -1127,6 +1139,7 @@ where
             renderer,
             viewport,
             translation - offset,
+            window,
         )
     }
 }
@@ -1282,19 +1295,32 @@ impl Default for State {
 }
 
 impl operation::Scrollable for State {
-    fn snap_to(&mut self, offset: RelativeOffset<Option<f32>>) {
+    fn snap_to(
+        &mut self,
+        offset: RelativeOffset<Option<f32>>,
+        _animation: iced::advanced::widget::operation::Animation,
+        _bounds: Rectangle,
+        _content: Size,
+    ) {
         State::snap_to(self, offset);
     }
 
-    fn scroll_to(&mut self, offset: AbsoluteOffset<Option<f32>>) {
+    fn scroll_to(
+        &mut self,
+        offset: AbsoluteOffset<Option<f32>>,
+        _animation: iced::advanced::widget::operation::Animation,
+        _bounds: Rectangle,
+        _content: Size,
+    ) {
         State::scroll_to(self, offset);
     }
 
     fn scroll_by(
         &mut self,
         _offset: AbsoluteOffset,
+        _animation: iced::advanced::widget::operation::Animation,
         _bounds: Rectangle,
-        _content_bounds: Rectangle,
+        _content: Size,
     ) {
         #[deny(non_snake_case)]
         let _not_implemented = ();
