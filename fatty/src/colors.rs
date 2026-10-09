@@ -1,3 +1,79 @@
+#[allow(non_camel_case_types)]
+#[allow(non_snake_case)]
+#[derive(Copy, Clone, Debug)]
+pub struct CIELAB {
+    pub L: f64,
+    pub a: f64,
+    pub b: f64
+}
+
+impl CIELAB {
+    pub fn from_rgb(rgb: iced::Color) -> CIELAB {
+        let lin = |c: f32| {
+            let c = c as f64;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        let f = |t: f64| if t > 0.0088564517 { t.powf(1. / 3.) } else { 7.787037 * t + 16. / 116. };
+
+        let r = lin(rgb.r);
+        let g = lin(rgb.g);
+        let b = lin(rgb.b);
+
+        let x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
+        let y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b;
+        let z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883;
+
+        let fx = f(x);
+        let fy = f(y);
+        let fz = f(z);
+
+        CIELAB {
+            L: 116. * fy - 16.,
+            a: 500. * (fx - fy),
+            b: 200. * (fy - fz),
+        }
+    }
+
+    pub fn to_rgb(&self) -> iced::Color {
+        let f_inv = |t: f64|
+            if t.powi(3) > 0.0088564517 {
+                t.powi(3)
+            } else {
+                (t - 16.0 / 116.0) / 7.787037
+            };
+
+        let gamma = |c: f64|
+            (if c <= 0.0031308 {
+                12.92 * c
+            } else {
+                1.055 * c.powf(1.0 / 2.4) - 0.055
+            }).clamp(0., 1.) as f32;
+
+        let fy = (self.L + 16.) / 116.;
+        let fx = fy + self.a / 500.;
+        let fz = fy - self.b / 200.;
+
+        let x = 0.95047 * f_inv(fx);
+        let y = f_inv(fy);
+        let z = 1.08883 * f_inv(fz);
+
+        let r = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z;
+        let g = -0.9692660 * x + 1.8760108 * y + 0.0415560 * z;
+        let b = 0.0556434 * x - 0.2040259 * y + 1.0572252 * z;
+
+        iced::Color::from_rgb(gamma(r), gamma(g), gamma(b))
+    }
+
+    // https://gist.github.com/jake-stewart/0a8ea46159a7da2c808e5be2177e1783
+    pub fn lerp(&self, other: CIELAB, t: f64) -> CIELAB {
+        CIELAB {
+            L: self.L + t * (other.L - self.L),
+            a: self.a + t * (other.a - self.a),
+            b: self.b + t * (other.b - self.b),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Hsv {
     pub h: u16,

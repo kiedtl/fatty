@@ -2,7 +2,7 @@ use iced::{Gradient, Background, Border, border::Radius, Color, Shadow};
 use iced::widget::{container, button, text_input, table, scrollable};
 
 use vte::ansi::Rgb;
-use crate::colors::Hsv;
+use crate::colors::{CIELAB, Hsv};
 use crate::widgets::input;
 use crate::widgets::spinnerbar;
 use crate::widgets::menu;
@@ -10,9 +10,62 @@ use crate::widgets::menu;
 const RAD_PX: f32 = 2.;
 pub const RAD: Radius = Radius { top_left: RAD_PX, top_right: RAD_PX, bottom_right: RAD_PX, bottom_left: RAD_PX };
 
+// https://gist.github.com/jake-stewart/0a8ea46159a7da2c808e5be2177e1783
+fn full_palette(basepal: [Color; 16]) -> [Rgb; 256] {
+    let base8_lab = [
+        CIELAB::from_rgb(basepal[0]),
+        CIELAB::from_rgb(basepal[1]),
+        CIELAB::from_rgb(basepal[2]),
+        CIELAB::from_rgb(basepal[3]),
+        CIELAB::from_rgb(basepal[4]),
+        CIELAB::from_rgb(basepal[5]),
+        CIELAB::from_rgb(basepal[6]),
+        CIELAB::from_rgb(basepal[7]),
+    ];
+
+    //let is_light = base8_lab[7].L < base8_lab[0].L;
+    let mut pal = [basepal[0]; 256];
+    for (pali, basei) in pal.iter_mut().zip(basepal.iter()) {
+        *pali = *basei;
+    }
+    let mut i = 16;
+
+    for r in 0..6 {
+        let c0 = base8_lab[0].lerp(base8_lab[1], r as f64 / 5.);
+        let c1 = base8_lab[2].lerp(base8_lab[3], r as f64 / 5.);
+        let c2 = base8_lab[4].lerp(base8_lab[5], r as f64 / 5.);
+        let c3 = base8_lab[6].lerp(base8_lab[7], r as f64 / 5.);
+        for g in 0..6 {
+            let c4 = c0.lerp(c1, g as f64 / 5.);
+            let c5 = c2.lerp(c3, g as f64 / 5.);
+            for b in 0..6 {
+                let c6 = c4.lerp(c5, b as f64 / 5.);
+                pal[i] = c6.to_rgb();
+                i += 1;
+            }
+        }
+    }
+
+    for gr in 0..24 {
+        let t = (gr as f64 + 1.) / 25.;
+        let lab = base8_lab[0].lerp(base8_lab[7], t);
+        pal[i] = lab.to_rgb();
+        i += 1;
+    }
+
+    std::array::from_fn::<Rgb, 256, _>(|i| {
+        let Color { r, g, b, a: _ } = pal[i];
+        Rgb {
+            r: (r * 255.) as u8,
+            g: (g * 255.) as u8,
+            b: (b * 255.) as u8,
+        }
+    })
+}
+
 #[derive(Copy, Clone)]
 pub struct Theme {
-    pub palette: [Rgb; 16],
+    pub palette: [Rgb; 256],
 
     pub fg: Color,
     pub white: Color,
@@ -29,25 +82,26 @@ pub struct Theme {
 
 impl Theme {
     pub fn gruvbox() -> Theme {
+        let base = [
+            Color::from_rgb8(0x3c, 0x38, 0x36), //  0 black
+            Color::from_rgb8(0xcc, 0x24, 0x1d), //  1 red
+            Color::from_rgb8(0x98, 0x97, 0x1a), //  2 green
+            Color::from_rgb8(0xd7, 0x99, 0x21), //  3 yellow
+            Color::from_rgb8(0x45, 0x85, 0x88), //  4 blue
+            Color::from_rgb8(0xb1, 0x62, 0x86), //  5 magenta
+            Color::from_rgb8(0x68, 0x9d, 0x6a), //  6 cyan
+            Color::from_rgb8(0xfe, 0xf9, 0xf3), //  7 white
+            Color::from_rgb8(0xc2, 0xb3, 0xa4), //  8 bright black
+            Color::from_rgb8(0x9d, 0x00, 0x06), //  9 bright red
+            Color::from_rgb8(0x79, 0x74, 0x0e), // 10 bright green
+            Color::from_rgb8(0xb5, 0x76, 0x14), // 11 bright yellow
+            Color::from_rgb8(0x07, 0x66, 0x78), // 12 bright blue
+            Color::from_rgb8(0x8f, 0x3f, 0x71), // 13 bright magenta
+            Color::from_rgb8(0x42, 0x7b, 0x58), // 14 bright cyan
+            Color::from_rgb8(0x3c, 0x38, 0x36), // 15 bright white
+        ];
         Theme {
-            palette: [
-                Rgb { r: 0x3c, g: 0x38, b: 0x36 }, //  0 black
-                Rgb { r: 0xcc, g: 0x24, b: 0x1d }, //  1 red
-                Rgb { r: 0x98, g: 0x97, b: 0x1a }, //  2 green
-                Rgb { r: 0xd7, g: 0x99, b: 0x21 }, //  3 yellow
-                Rgb { r: 0x45, g: 0x85, b: 0x88 }, //  4 blue
-                Rgb { r: 0xb1, g: 0x62, b: 0x86 }, //  5 magenta
-                Rgb { r: 0x68, g: 0x9d, b: 0x6a }, //  6 cyan
-                Rgb { r: 0xfe, g: 0xf9, b: 0xf3 }, //  7 white
-                Rgb { r: 0xc2, g: 0xb3, b: 0xa4 }, //  8 bright black
-                Rgb { r: 0x9d, g: 0x00, b: 0x06 }, //  9 bright red
-                Rgb { r: 0x79, g: 0x74, b: 0x0e }, // 10 bright green
-                Rgb { r: 0xb5, g: 0x76, b: 0x14 }, // 11 bright yellow
-                Rgb { r: 0x07, g: 0x66, b: 0x78 }, // 12 bright blue
-                Rgb { r: 0x8f, g: 0x3f, b: 0x71 }, // 13 bright magenta
-                Rgb { r: 0x42, g: 0x7b, b: 0x58 }, // 14 bright cyan
-                Rgb { r: 0x3c, g: 0x38, b: 0x36 }, // 15 bright white
-            ],
+            palette: full_palette(base),
 
             fg: Color::from_rgb8(0x28, 0x28, 0x28),
             white: Color::from_rgb8(0xfb, 0xfb, 0xe7),
