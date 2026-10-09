@@ -214,7 +214,7 @@ impl Element {
                     .align_x(alignment::Horizontal::Center)
                     .boxed()
             },
-            Element::Column(c) => text(format!("<column {c:?}>")).boxed(),
+            Element::Column(c) => rtext(format!("<column {c:?}>")).boxed(),
             Element::Row { items } => {
                 Row::with_children(
                     items.iter().map(|it| it.to_iced(style, ids))

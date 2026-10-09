@@ -38,6 +38,12 @@ pub fn thead<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
             ..Default::default()
         })
         .size(14.5)
+        .selectable(true)
+}
+
+pub fn rtext<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
+    text(f)
+        .selectable(true)
 }
 
 // pub fn bold<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
@@ -55,4 +61,5 @@ pub fn mono<'a>(f: impl IntoFragment<'a>) -> Text<'a, Theme> {
             ..Default::default()
         })
         .size(15.)
+        .selectable(true)
 }

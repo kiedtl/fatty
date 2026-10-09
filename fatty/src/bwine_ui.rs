@@ -8,10 +8,10 @@ use crate::Elem;
 
 pub fn to_iced<'a>(value: &'a Value, vsize: Option<iced::Size>) -> Elem<'a> {
     match value {
-        Value::Path(p) => text(p.display().to_string()).boxed(),
-        Value::Int(int) => text(int.to_string()).boxed(),
-        Value::Bytes(bytes) => text(String::from_utf8_lossy(&bytes[..(50).min(bytes.len())])).boxed(),
-        Value::Text(value) => text(value.to_string()).boxed(),
+        Value::Path(p) => rtext(p.display().to_string()).boxed(),
+        Value::Int(int) => rtext(int.to_string()).boxed(),
+        Value::Bytes(bytes) => rtext(String::from_utf8_lossy(&bytes[..(50).min(bytes.len())])).boxed(),
+        Value::Text(value) => rtext(value.to_string()).boxed(),
         Value::Array(values) => grid(values.iter().map(|v| to_iced(v, vsize))).boxed(),
         Value::Map(rows) => {
             let columns = [
@@ -34,14 +34,14 @@ pub fn to_iced<'a>(value: &'a Value, vsize: Option<iced::Size>) -> Elem<'a> {
             ).boxed()
         },
         Value::Tag(tag, value) => column![
-            text(format!("Tag: {tag}")),
+            rtext(format!("Tag: {tag}")),
             to_iced(value, vsize),
         ].spacing(2).boxed(),
-        Value::Float(float) => text(float.to_string()).boxed(),
-        Value::Bool(value) => text(value.to_string()).boxed(),
-        Value::Null => text("nil").boxed(),
-        Value::Undefined => text("undefined").boxed(),
-        Value::Simple(v) => text(format!("{v:0>2X}")).boxed(),
+        Value::Float(float) => rtext(float.to_string()).boxed(),
+        Value::Bool(value) => rtext(value.to_string()).boxed(),
+        Value::Null => rtext("nil").boxed(),
+        Value::Undefined => rtext("undefined").boxed(),
+        Value::Simple(v) => rtext(format!("{v:0>2X}")).boxed(),
         Value::Table { header, rows } => {
             let columns = header.iter().enumerate().map(|(col_i, c)| {
                 table::column(to_iced(c, vsize), move |e: &Vec<Value>| {

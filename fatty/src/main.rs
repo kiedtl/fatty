@@ -55,6 +55,7 @@ use iced::widget::{
     Row,
     void,
     Widget,
+    sticky,
 };
 use iced::advanced::text::{Wrapping, Ellipsis};
 
@@ -887,15 +888,17 @@ impl App {
             for (i, exec) in self.execs.iter().enumerate() {
                 col = col.push(
                     column![
-                        container(row![
-                            container(
-                                text(&exec.cmdline)
-                            )
-                                .width(Length::Fill),
-                            exit_reason(exec.exit_reason),
-                        ])
-                            .class(CS::Box)
-                            .padding(3),
+                        sticky(
+                            container(row![
+                                container(
+                                    text(&exec.cmdline)
+                                )
+                                    .width(Length::Fill),
+                                exit_reason(exec.exit_reason),
+                            ])
+                                .class(CS::Box)
+                                .padding(3)
+                        ),
                         if !exec.document.elements.is_empty() {
                             scrollable({
                                 let mut uis: Column<Elem<'_>> = Column::new()
@@ -1010,23 +1013,16 @@ impl App {
                     column![
                         column![
                             grid_listing,
-                            scrollable(
-                                container(jobs)
-                                    .padding(Padding {
-                                        bottom: 5.,
-                                        top: 5.,
-                                        right: 15.,
-                                        left: 5.,
-                                    })
-                                    .width(Length::Fill)
-                                    .class(CS::WhiteBox)
-                            )
-                                .height(Length::FillPortion(1))
+                            container(jobs)
+                                .padding(Padding {
+                                    bottom: 5.,
+                                    top: 5.,
+                                    right: 15.,
+                                    left: 5.,
+                                })
                                 .width(Length::Fill)
-                                .anchor_bottom()
-                        ]
-                            .spacing(4)
-                            .height(Length::FillPortion(1)),
+                                .class(CS::WhiteBox)
+                        ].spacing(4),
                         column![
                             responsive(move |size| {
                                 self.vsize.set(Some(size));

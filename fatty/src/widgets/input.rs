@@ -1641,7 +1641,7 @@ fn find_cursor_position(
         .value
         .raw()
         .hit_test(Point::new(x + offset, text_bounds.height / 2.0))
-        .map(text::Hit::cursor)?;
+        .map(|h| h.index)?;
 
     Some(
         unicode_segmentation::UnicodeSegmentation::graphemes(

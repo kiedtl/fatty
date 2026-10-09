@@ -5,13 +5,15 @@ use iced::{
     keyboard::{self, key, Modifiers},
     advanced::{
         layout, renderer,
-        widget::{self, Widget, Tree},
+        widget::{self, Widget, Tree, operation},
+        graphics::text::cosmic_text,
         Layout, Shell,
+        text::{self, Target},
     },
     mouse,
     Event,
     Color,
-    Element, Length, Rectangle, Size,
+    Element, Length, Rectangle, Size, Point
 };
 
 pub struct Tty<'a, Theme, Message> {
@@ -24,9 +26,16 @@ pub struct Tty<'a, Theme, Message> {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct CellSize {
+struct State {
     width: f32,
     height: f32,
+    selection: Option<Selection>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Selection {
+    start: Point<usize>,
+    end: Point<usize>,
 }
 
 impl<'a, Theme, Message> Tty<'a, Theme, Message> {
@@ -50,11 +59,11 @@ where
     Renderer: iced::advanced::text::Renderer,
 {
     fn tag(&self) -> widget::tree::Tag {
-        widget::tree::Tag::of::<CellSize>()
+        widget::tree::Tag::of::<State>()
     }
 
     fn state(&self) -> widget::tree::State {
-        widget::tree::State::new(CellSize::default())
+        widget::tree::State::new(State::default())
     }
 
     fn size(&self) -> Size<Length> {
@@ -136,10 +145,10 @@ where
     ) {
         use iced::advanced::text::{self, Renderer as _};
 
-        let cell_size = tree.state.downcast_mut::<CellSize>();
+        let state = tree.state.downcast_mut::<State>();
 
         // Measure once; re-use on subsequent layouts.
-        if cell_size.width == 0.0 {
+        if state.width == 0.0 {
             let (w, h) = crate::utils::measure_text(
                 "M", f32::INFINITY, self.font_size, 1.2,
                 iced::Font {
@@ -147,15 +156,19 @@ where
                     ..Default::default()
                 },
             );
-            cell_size.width = w;
-            cell_size.height = h;
+            state.width = w;
+            state.height = h;
         }
+
+        // Don't limit rows for now -- since TTY is always in a scrollable isn't not necessary, yet
+        //let max_rows = (limits.max.height / state.height).ceil(); // Includes partially visible top row
+        //let rows = (self.term.cells.len() as f32).min(max_rows);
 
         let rows = self.term.cells.len() as f32;
         let cols = self.term.width as f32;
         tree.size = Size {
-            width: cols * cell_size.width,
-            height: rows * cell_size.height,
+            width: cols * state.width,
+            height: rows * state.height,
         };
     }
 
@@ -172,13 +185,13 @@ where
         use iced::advanced::text::{self, Paragraph, Renderer as _};
 
         let origin = layout.bounds().position();
-        let &CellSize { width: cw, height: ch } = tree.state.downcast_ref::<CellSize>();
+        let state = tree.state.downcast_ref::<State>();
 
         for (row, line) in self.term.cells.iter().enumerate() {
             for (col, cell) in line.iter().enumerate() {
-                let x = origin.x + col as f32 * cw;
-                let y = origin.y + row as f32 * ch;
-                let bounds = Rectangle { x, y, width: cw, height: ch };
+                let x = origin.x + col as f32 * state.width;
+                let y = origin.y + row as f32 * state.height;
+                let bounds = Rectangle { x, y, width: state.width, height: state.height };
 
                 let mut bg = cell.bg;
                 let mut fg = cell.fg;
@@ -204,7 +217,7 @@ where
                             font: cell.iced_font(),
                             align_x: iced::alignment::Horizontal::Left.into(),
                             align_y: iced::alignment::Vertical::Top.into(),
-                            line_height: text::LineHeight::Absolute(iced::Pixels(ch)),
+                            line_height: text::LineHeight::Absolute(iced::Pixels(state.height)),
                             shaping: text::Shaping::Basic,
                             wrapping: text::Wrapping::None,
                             ellipsis: Default::default(),
@@ -217,6 +230,60 @@ where
                 }
             }
         }
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout,
+        _viewport: &Rectangle,
+        _renderer: &Renderer,
+        operation: &mut dyn iced::advanced::widget::Operation,
+    ) {
+        let state = tree.state.downcast_mut::<State>();
+        operation.text(
+            None,
+            layout.bounds(),
+            &mut Operand(self, state)
+        );
+    }
+}
+
+struct Operand<'a, 't, T, M>(&'a Tty<'t, T, M>, &'a mut State);
+
+impl<'a, 't, T, M> operation::Text for Operand<'a, 't, T, M> {
+    fn text(&self) -> text::Fragment<'a> {
+        self.0.term.cells
+            .iter()
+            .map(|row| row.iter())
+            .flatten()
+            .map(|c| c.ch)
+            .collect::<String>()
+            .into()
+    }
+
+    fn select(&mut self, start: Point, end: Point, _target: Target) {
+        let start = Point::new(
+            (start.x / self.1.width) as usize,
+            (start.y / self.1.height) as usize
+        );
+        let end = Point::new(
+            (end.x / self.1.width) as usize,
+            (end.y / self.1.height) as usize
+        );
+        self.1.selection = Some(Selection { start, end });
+    }
+
+    fn select_all(&mut self) {
+        todo!()
+    }
+
+    fn deselect(&mut self) {
+        self.1.selection = None;
+    }
+
+    fn copy(&mut self) -> Option<String> {
+        todo!()
     }
 }
 

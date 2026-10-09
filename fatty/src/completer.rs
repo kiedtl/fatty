@@ -55,7 +55,10 @@ pub fn complete_arg_dumb(_command: &str, input: &str, cursor: usize) -> Vec<Stri
     let line = &input[..safe_cursor];
 
     let ends_with_ws = line.ends_with(|c: char| c.is_whitespace());
-    let words: Vec<&str> = line.split_whitespace().collect();
+    let mut words: Vec<&str> = line.split_whitespace().collect();
+    if words.is_empty() {
+        words.push("");
+    }
     assert!(words.len() > 0);
 
     let (_preceding_args, current_word) = if ends_with_ws {

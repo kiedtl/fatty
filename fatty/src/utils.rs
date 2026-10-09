@@ -93,7 +93,7 @@ impl Mode {
             mono(f)
                 .line_height(0.75)
                 .size(10.)
-                .class(TextClass::Custom(|t: &Theme| t.white))
+                .class(TextClass::Custom(|t: &Theme| t.white, |t: &Theme| t.bg(11)))
         }
 
         let bit = |mask: u32, ch: char| txt(if m & mask != 0 { ch } else { NONE_CHAR });
