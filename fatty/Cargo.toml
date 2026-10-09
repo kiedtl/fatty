@@ -12,8 +12,8 @@ chrono = "0.4.45"
 clap = { version = "4.6.0", features = ["derive"] }
 futures = "0.3.32"
 glob = "0.3.3"
-iced_core = { git = "https://github.com/iced-rs/iced", rev = "1fea4b6045c5e6cc764a9d2f62b8023c420f7161" }
-iced = { git = "https://github.com/iced-rs/iced", rev = "1fea4b6045c5e6cc764a9d2f62b8023c420f7161", features = [ "advanced", "image", "canvas", "qr_code", "tokio" ]}
+iced_core = { git = "https://github.com/iced-rs/iced", rev = "69bbf18ec32c9937f6abb770a5d7eddfd8f4c060" }
+iced = { git = "https://github.com/iced-rs/iced", rev = "69bbf18ec32c9937f6abb770a5d7eddfd8f4c060", features = [ "advanced", "image", "canvas", "qr_code", "tokio" ]}
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "webp"] }
 inotify = "0.11.1"
 itertools = "0.14.0"

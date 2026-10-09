@@ -244,7 +244,7 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
         value: Option<&Value>,
-    ) -> layout::Node {
+    ) {
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
         let value = value.unwrap_or(&self.value);
 
@@ -309,19 +309,28 @@ where
                 ),
             };
 
-            let text_node =
-                layout::Node::new(text_bounds - Size::new(icon_width + icon.spacing, 0.0))
-                    .move_to(text_position);
-
-            let icon_node =
-                layout::Node::new(Size::new(icon_width, text_bounds.height)).move_to(icon_position);
-
-            layout::Node::with_children(text_bounds.expand(padding), vec![text_node, icon_node])
+            tree.size = text_bounds.expand(padding);
+            tree.children = vec![
+                Tree {
+                    translation: Vector::new(text_position.x, text_position.y),
+                    size: text_bounds - Size::new(icon_width + icon.spacing, 0.0),
+                    ..Tree::empty()
+                },
+                Tree {
+                    translation: Vector::new(icon_position.x, icon_position.y),
+                    size: Size::new(icon_width, text_bounds.height),
+                    ..Tree::empty()
+                },
+            ];
         } else {
-            let text =
-                layout::Node::new(text_bounds).move_to(Point::new(padding.left, padding.top));
-
-            layout::Node::with_children(text_bounds.expand(padding), vec![text])
+            tree.size = text_bounds.expand(padding);
+            tree.children = vec![
+                Tree {
+                    translation: Vector::new(padding.left, padding.top),
+                    size: text_bounds,
+                    ..Tree::empty()
+                },
+            ];
         }
     }
 
@@ -374,7 +383,7 @@ where
         tree: &Tree,
         renderer: &mut Renderer,
         theme: &Theme,
-        layout: Layout<'_>,
+        layout: Layout,
         _cursor: mouse::Cursor,
         value: Option<&Value>,
         viewport: &Rectangle,
@@ -385,8 +394,9 @@ where
 
         let bounds = layout.bounds();
 
-        let mut children_layout = layout.children();
-        let text_bounds = children_layout.next().unwrap().bounds();
+        let mut children_layout = layout.iter(&tree.children);
+        let (text_layout, _) = children_layout.next().unwrap();
+        let text_bounds = text_layout.bounds();
 
         let style = Catalog::style(theme, &self.class, self.last_status.unwrap_or(Status::Disabled));
 
@@ -400,7 +410,7 @@ where
         );
 
         if self.icon.is_some() {
-            let icon_layout = children_layout.next().unwrap();
+            let (icon_layout, _) = children_layout.next().unwrap();
 
             let icon = state.icon.raw();
 
@@ -581,16 +591,19 @@ where
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
     ) {
+        let (text_layout, _) = layout.iter(&tree.children).next().unwrap();
+        let text_bounds = text_layout.bounds();
+
         let update_cache = |state, value| {
             replace_paragraph(
                 renderer,
                 state,
-                layout,
+                text_bounds,
                 value,
                 self.font,
                 self.size,
@@ -619,11 +632,7 @@ where
                 };
 
                 if let Some(cursor_position) = click_position {
-                    let text_layout = layout.children().next().unwrap();
-
                     let target = {
-                        let text_bounds = text_layout.bounds();
-
                         let alignment_offset = alignment_offset(
                             text_bounds.width,
                             state.value.raw().min_width(),
@@ -641,7 +650,7 @@ where
                             let position = if target > 0.0 {
                                 let value = self.value.clone();
 
-                                find_cursor_position(text_layout.bounds(), &value, state, target)
+                                find_cursor_position(text_bounds, &value, state, target)
                             } else {
                                 None
                             }
@@ -659,7 +668,7 @@ where
                         }
                         click::Kind::Double => {
                             let position = find_cursor_position(
-                                text_layout.bounds(),
+                                text_bounds,
                                 &self.value,
                                 state,
                                 target,
@@ -698,11 +707,7 @@ where
                 let state = state::<Renderer>(tree);
 
                 if let Some(is_dragging) = &state.is_dragging {
-                    let text_layout = layout.children().next().unwrap();
-
                     let target = {
-                        let text_bounds = text_layout.bounds();
-
                         let alignment_offset = alignment_offset(
                             text_bounds.width,
                             state.value.raw().min_width(),
@@ -714,7 +719,7 @@ where
 
                     let value = self.value.clone();
                     let position =
-                        find_cursor_position(text_layout.bounds(), &value, state, target)
+                        find_cursor_position(text_bounds, &value, state, target)
                             .unwrap_or(0);
 
                     let selection_before = state.cursor.selection(&value);
@@ -1197,14 +1202,14 @@ where
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &layout::Limits,
-    ) -> layout::Node {
-        self.mylayout(tree, renderer, limits, None)
+    ) {
+        self.mylayout(tree, renderer, limits, None);
     }
 
     fn operate(
         &mut self,
         tree: &mut Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         _viewport: &Rectangle,
         _renderer: &Renderer,
         operation: &mut dyn Operation,
@@ -1219,7 +1224,7 @@ where
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
@@ -1266,7 +1271,7 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         _style: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
@@ -1276,7 +1281,7 @@ where
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'b>,
+        layout: Layout,
         renderer: &Renderer,
         _viewport: &Rectangle,
         translation: Vector,
@@ -1331,7 +1336,7 @@ where
     fn mouse_interaction(
         &self,
         _tree: &Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
@@ -1651,7 +1656,7 @@ fn find_cursor_position(
 fn replace_paragraph<Renderer>(
     renderer: &Renderer,
     state: &mut State<Renderer::Paragraph>,
-    layout: Layout<'_>,
+    text_bounds: Rectangle,
     value: &Value,
     font: Option<Font>,
     text_size: Option<Pixels>,
@@ -1661,9 +1666,6 @@ fn replace_paragraph<Renderer>(
 {
     let font = font.unwrap_or_else(|| renderer.font());
     let text_size = text_size.unwrap_or_else(|| renderer.text_size());
-
-    let mut children_layout = layout.children();
-    let text_bounds = children_layout.next().unwrap().bounds();
 
     state.value = paragraph::Plain::new(Text {
         font,

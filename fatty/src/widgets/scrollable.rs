@@ -385,7 +385,7 @@ where
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &layout::Limits,
-    ) -> layout::Node {
+    ) {
         let size = self.size();
 
         let (right_padding, bottom_padding) = match self.direction {
@@ -405,6 +405,7 @@ where
         };
 
         layout::padded(
+            tree,
             limits,
             size.width,
             size.height,
@@ -413,7 +414,7 @@ where
                 bottom: bottom_padding,
                 ..Padding::ZERO
             },
-            |limits| {
+            |tree, limits| {
                 let child_limits = layout::Limits::new(
                     Size::new(limits.min.width, limits.min.height),
                     Size::new(
@@ -431,27 +432,29 @@ where
                 );
 
                 self.content.as_widget_mut().layout(
-                    &mut tree.children[0],
+                    tree,
                     renderer,
                     &child_limits,
-                )
+                );
+
+                tree.size
             },
-        )
+        );
     }
 
     fn operate(
         &mut self,
         tree: &mut Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         viewport: &Rectangle,
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        let state = tree.state.downcast_mut::<State>();
-
         let bounds = layout.bounds();
-        let content_layout = layout.children().next().unwrap();
+        let (content_layout, content_tree) = layout.iter_mut(&mut tree.children).next().unwrap();
         let content_bounds = content_layout.bounds();
+
+        let state = tree.state.downcast_mut::<State>();
         let translation =
             state.translation(self.direction, bounds, content_bounds);
         let id = self.id.as_ref().map(|id| &id.0);
@@ -471,7 +474,7 @@ where
         operation.container(id, content_bounds, &viewport);
         operation.traverse(&mut |operation| {
             self.content.as_widget_mut().operate(
-                &mut tree.children[0],
+                content_tree,
                 content_layout,
                 &viewport,
                 renderer,
@@ -484,18 +487,19 @@ where
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
         let cursor_over_scrollable = cursor.position_over(bounds);
 
-        let content = layout.children().next().unwrap();
+        let (content, content_tree) = layout.iter_mut(&mut tree.children).next().unwrap();
         let content_bounds = content.bounds();
+
+        let state = tree.state.downcast_mut::<State>();
 
         let scrollbars = Scrollbars::new(state, self.direction, bounds, content_bounds);
         let (mouse_over_y_scrollbar, mouse_over_x_scrollbar) = scrollbars.is_mouse_over(cursor);
@@ -705,7 +709,7 @@ where
                 // let had_input_method = shell.input_method().is_enabled();
 
                 self.content.as_widget_mut().update(
-                    &mut tree.children[0],
+                    content_tree,
                     event,
                     content,
                     cursor,
@@ -891,14 +895,14 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         defaults: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State>();
 
         let bounds = layout.bounds();
-        let content_layout = layout.children().next().unwrap();
+        let (content_layout, content_tree) = layout.iter(&tree.children).next().unwrap();
         let content_bounds = content_layout.bounds();
 
         let Some(visible_bounds) = bounds.intersection(viewport) else {
@@ -941,7 +945,7 @@ where
                     Vector::new(-translation.x, -translation.y),
                     |renderer| {
                         self.content.as_widget().draw(
-                            &tree.children[0],
+                            content_tree,
                             renderer,
                             theme,
                             defaults,
@@ -1047,7 +1051,7 @@ where
             );
         } else {
             self.content.as_widget().draw(
-                &tree.children[0],
+                content_tree,
                 renderer,
                 theme,
                 defaults,
@@ -1065,7 +1069,7 @@ where
     fn mouse_interaction(
         &self,
         tree: &Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
         renderer: &Renderer,
@@ -1074,7 +1078,7 @@ where
         let bounds = layout.bounds();
         let cursor_over_scrollable = cursor.position_over(bounds);
 
-        let content_layout = layout.children().next().unwrap();
+        let (content_layout, content_tree) = layout.iter(&tree.children).next().unwrap();
         let content_bounds = content_layout.bounds();
 
         let scrollbars =
@@ -1101,7 +1105,7 @@ where
             };
 
             self.content.as_widget().mouse_interaction(
-                &tree.children[0],
+                content_tree,
                 content_layout,
                 cursor,
                 &Rectangle {
@@ -1117,14 +1121,14 @@ where
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'b>,
+        layout: Layout,
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
         window: Size,
     ) -> Vec<overlay::Element<'b, Message, Theme, Renderer>> {
         let bounds = layout.bounds();
-        let content_layout = layout.children().next().unwrap();
+        let (content_layout, _) = layout.iter(&tree.children).next().unwrap();
         let content_bounds = content_layout.bounds();
 
         let offset = tree.state.downcast_ref::<State>().translation(
@@ -1133,9 +1137,11 @@ where
             content_bounds,
         );
 
+        let (content_layout, content_tree) = layout.iter_mut(&mut tree.children).next().unwrap();
+
         self.content.as_widget_mut().overlay(
-            &mut tree.children[0],
-            layout.children().next().unwrap(),
+            content_tree,
+            content_layout,
             renderer,
             viewport,
             translation - offset,

@@ -83,9 +83,9 @@ where
         Size::new(self.width, Length::Fixed(self.height))
     }
 
-    fn layout(&mut self, _: &mut Tree, _: &Renderer, lim: &layout::Limits) -> layout::Node {
+    fn layout(&mut self, tree: &mut Tree, _: &Renderer, lim: &layout::Limits) {
         let size = lim.resolve(self.width, Length::Fixed(self.height), Size::new(200.0, self.height));
-        layout::Node::new(size)
+        tree.size = size;
     }
 
     fn draw(
@@ -94,7 +94,7 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         _: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         _: mouse::Cursor,
         _: &Rectangle,
     ) {

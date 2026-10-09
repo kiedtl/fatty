@@ -66,7 +66,7 @@ where
         &mut self,
         _tree: &mut Tree,
         event: &Event,
-        _layout: Layout<'_>,
+        _layout: Layout,
         _cursor: mouse::Cursor,
         _renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
@@ -131,7 +131,7 @@ where
         tree: &mut widget::Tree,
         _renderer: &Renderer,
         _limits: &layout::Limits,
-    ) -> layout::Node {
+    ) {
         use iced::advanced::text::{self, Renderer as _};
 
         let cell_size = tree.state.downcast_mut::<CellSize>();
@@ -151,10 +151,10 @@ where
 
         let rows = self.term.cells.len() as f32;
         let cols = self.term.width as f32;
-        layout::Node::new(Size {
+        tree.size = Size {
             width: cols * cell_size.width,
             height: rows * cell_size.height,
-        })
+        };
     }
 
     fn draw(
@@ -163,7 +163,7 @@ where
         renderer: &mut Renderer,
         _theme: &Theme,
         _style: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         _cursor: iced::advanced::mouse::Cursor,
         _viewport: &Rectangle,
     ) {
