@@ -555,6 +555,17 @@ impl<'a, T: chrono::TimeZone> From<chrono::DateTime<T>> for Value<'a> {
 // }
 
 impl Value<'_> {
+    pub fn is_scalar(&self) -> bool {
+        match self {
+            Value::Bytes(_)
+            | Value::Table { .. }
+            | Value::Array(_)
+            | Value::Map(_)
+            | Value::Tag(_, _) => false,
+            _ => true,
+        }
+    }
+
     pub fn truthy(&self) -> bool {
         match self {
             Value::Path(p) => !p.as_os_str().is_empty(),

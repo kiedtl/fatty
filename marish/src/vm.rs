@@ -321,7 +321,7 @@ impl VM {
 
     pub async fn execute_once(&mut self) {
         macro_rules! vmerror {
-            ($($arg:tt)*) => {
+            ($($arg:tt)*) => {{
                 { // New scope to force args to drop before self.end()
                     let args = format_args!($($arg)*);
                     if let Some(slave) = self.slave.as_ref() {
@@ -333,7 +333,7 @@ impl VM {
                 }
                 self.end().await;
                 return;
-            };
+            }};
         }
         assert!(!self.done);
         assert!(self.waiting_on.is_none());
@@ -769,6 +769,33 @@ impl VM {
                     }
                 }
 
+                fn veccmp<'a, 'v>(array: &'a [Value<'v>], rhs: &'a Value<'v>, op: Operator)
+                    -> Result<bool, (&'a Value<'v>, &'a Value<'v>)>
+                {
+                    for item in array {
+                        if !perform_cmp(item, rhs, op, false)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                }
+
+                fn perform_cmp<'a, 'v>(a: &'a Value<'v>, b: &'a Value<'v>, op: Operator, allow_vec_op: bool)
+                    -> Result<bool, (&'a Value<'v>, &'a Value<'v>)>
+                {
+                    Ok(match (a, b) {
+                        (Value::Int(a), Value::Int(b)) => cmp(*a, *b, op),
+                        (Value::Float(a), Value::Float(b)) => cmp(*a, *b, op),
+                        (Value::Int(a), Value::Float(b)) => cmp(*a as f64, *b, op),
+                        (Value::Float(a), Value::Int(b)) => cmp(*a, *b as f64, op),
+                        (Value::Text(a), Value::Text(b)) => cmp(a, b, op),
+                        (Value::Array(arr), rhs @ Value::Int(_)) if allow_vec_op => veccmp(arr, rhs, op)?,
+                        (Value::Array(arr), rhs @ Value::Float(_)) if allow_vec_op => veccmp(arr, rhs, op)?,
+                        (Value::Array(arr), rhs @ Value::Text(_)) if allow_vec_op => veccmp(arr, rhs, op)?,
+                        _ => return Err((a, b)),
+                    })
+                }
+
                 fn math<T: num_traits::Num>(a: T, b: T, op: Operator) -> T {
                     match op {
                         Operator::Add => a + b,
@@ -779,46 +806,78 @@ impl VM {
                     }
                 }
 
+                fn vecmath<'a, 'v>(array: &'a [Value<'v>], rhs: &'a Value<'v>, op: Operator)
+                    -> Result<Vec<Value<'static>>, (&'a Value<'v>, &'a Value<'v>)>
+                {
+                    array.iter().map(|lhs| perform_math(lhs, rhs, op, false)).collect()
+                }
+
+                fn perform_math<'a, 'v>(a: &'a Value<'v>, b: &'a Value<'v>, op: Operator, allow_vec_op: bool)
+                    -> Result<Value<'static>, (&'a Value<'v>, &'a Value<'v>)>
+                {
+                    Ok(match (a, b) {
+                        (Value::Text(a), Value::Text(b)) if op == Operator::Add => {
+                            let r = format!("{}{}", a.to_string(), b.to_string());
+                            Value::from(r)
+                        },
+                        (Value::Int(a), Value::Int(b)) => Value::Int(math(*a, *b, op)),
+                        (Value::Float(a), Value::Float(b)) => Value::Float(math(*a, *b, op)),
+                        (Value::Int(a), Value::Float(b)) => Value::Float(math(*a as f64, *b, op)),
+                        (Value::Float(a), Value::Int(b)) => Value::Float(math(*a, *b as f64, op)),
+                        (Value::Array(a), rhs) if allow_vec_op => Value::Array(vecmath(a, rhs, op)?.into()),
+                        _ => return Err((a, b))
+                    })
+                }
+
+                fn vecboolop<'a, 'v>(array: &'a [Value<'v>], rhs: &'a Value<'v>, op: Operator)
+                    -> Result<Vec<Value<'static>>, (&'a Value<'v>, &'a Value<'v>)>
+                {
+                    array.iter().map(|lhs| perform_boolop(lhs, rhs, op, false)).collect()
+                }
+
+                fn perform_boolop<'a, 'v>(a: &'a Value<'v>, b: &'a Value<'v>, op: Operator, allow_vec_op: bool)
+                    -> Result<Value<'static>, (&'a Value<'v>, &'a Value<'v>)>
+                {
+                    Ok(match (a, b) {
+                        (Value::Int(_), Value::Int(_)) => todo!(), // binary operators?
+                        (Value::Bool(a), Value::Bool(b)) => Value::Bool(match op {
+                            Operator::And => *a && *b,
+                            Operator::Or => *a || *b,
+                            Operator::Xor => *a ^ *b,
+                            _ => unreachable!(),
+                        }),
+                        (Value::Array(a), b @ Value::Bool(_)) if allow_vec_op => Value::Array(vecboolop(a, b, op)?.into()),
+                        _ => return Err((a, b)),
+                    })
+                }
+
                 let b = pop_value!(self);
                 let a = pop_value!(self);
 
                 let op = *op;
                 let result = match op {
-                    Operator::Eq => Value::Bool(a == b),
-                    Operator::Ne => Value::Bool(a != b),
+                    Operator::Eq => Value::Bool(match (a, b) {
+                        (Value::Array(arr), rhs) if rhs.is_scalar() => arr.as_ref().iter().all(|v| v == &rhs),
+                        (a, b) => a == b,
+                    }),
+                    Operator::Ne => Value::Bool(match (a, b) {
+                        (Value::Array(arr), rhs) if rhs.is_scalar() => arr.as_ref().iter().all(|v| v != &rhs),
+                        (a, b) => a != b,
+                    }),
                     Operator::Gt | Operator::Lt | Operator::Le | Operator::Ge
-                        => Value::Bool(
-                            match (&a, &b) {
-                                (Value::Int(a), Value::Int(b)) => cmp(*a, *b, op),
-                                (Value::Float(a), Value::Float(b)) => cmp(*a, *b, op),
-                                (Value::Int(a), Value::Float(b)) => cmp(*a as f64, *b, op),
-                                (Value::Float(a), Value::Int(b)) => cmp(*a, *b as f64, op),
-                                (Value::Text(a), Value::Text(b)) => cmp(a, b, op),
-                                _ => panic!("invalid operands: {:?} and {:?}", a, b),
-                            }
-                        ),
+                        => Value::Bool(match perform_cmp(&a, &b, op, true) {
+                            Ok(b) => b,
+                            Err((a, b)) => vmerror!("invalid operands: {a:?} and {b:?}"),
+                        }),
                     Operator::And | Operator::Or | Operator::Xor
-                        => match (a, b) {
-                            (Value::Int(_), Value::Int(_)) => todo!(), // binary operators?
-                            (Value::Bool(a), Value::Bool(b)) => Value::Bool(match op {
-                                Operator::And => a && b,
-                                Operator::Or => a || b,
-                                Operator::Xor => a ^ b,
-                                _ => unreachable!(),
-                            }),
-                            _ => panic!("invalid operands"),
-                        }
+                        => match perform_boolop(&a, &b, op, true) {
+                            Ok(b) => b,
+                            Err((a, b)) => vmerror!("invalid operands: {a:?} and {b:?}"),
+                        },
                     Operator::Add | Operator::Sub | Operator::Mul | Operator::Div
-                        => match (&a, &b) {
-                            (Value::Text(a), Value::Text(b)) if op == Operator::Add => {
-                                let r = format!("{}{}", a.to_string(), b.to_string());
-                                Value::from(r)
-                            },
-                            (Value::Int(a), Value::Int(b)) => Value::Int(math(*a, *b, op)),
-                            (Value::Float(a), Value::Float(b)) => Value::Float(math(*a, *b, op)),
-                            (Value::Int(a), Value::Float(b)) => Value::Float(math(*a as f64, *b, op)),
-                            (Value::Float(a), Value::Int(b)) => Value::Float(math(*a, *b as f64, op)),
-                            _ => panic!("invalid operands: {:?} and {:?}", a, b),
+                        => match perform_math(&a, &b, op, true) {
+                            Ok(b) => b,
+                            Err((a, b)) => vmerror!("invalid operands: {a:?} and {b:?}"),
                         },
                     Operator::Like => todo!(),
                     Operator::NotLike => todo!(),

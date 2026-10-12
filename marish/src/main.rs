@@ -58,7 +58,7 @@ async fn main() -> ExitCode {
     env.insert("FATTY".into(), "normal0".into());
 
     let program: Vec<_> = match compiler::compile(&path_dirs, &parsed) {
-        Ok(p) => p,
+        Ok((_warnings, p)) => p,
         Err(err) => {
             eprintln!("marish: {err:?}");
             return ExitCode::FAILURE;
@@ -146,6 +146,7 @@ async fn main() -> ExitCode {
 fn exit_code_from_reason(reason: &ExitReason) -> ExitCode {
     let code: u8 = match reason {
         ExitReason::Normal(code) => (*code & 0xff) as u8,
+        ExitReason::Builtin => 0,
         ExitReason::Signal { signal, .. } => {
             let signum = signal.as_raw();
             (128u32.saturating_add(signum as u32).min(255)) as u8

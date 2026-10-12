@@ -120,6 +120,23 @@ test "comparison operators on integers" (
     assert 3 -ne 2
 )
 
+test "comparison operators with array lhs" (
+    assert [1 2 3 4] -gt 0
+    assert [1] -lt 43
+    assert [383 383 383] -eq 383
+    assert [383 383 383] -ne 929
+    assert [] -lt 0
+    assert [] -lt 0
+    assert [] -gt 0
+    assert [] -gt 0
+    assert [] -le 0
+    assert [] -le 0
+    assert [] -ge 0
+    assert [] -ge 0
+    assert [] -eq 0
+    assert [] -ne 0
+)
+
 test "logical and" (
     assert $t -and $t
     assert -not ($t -and $f)
@@ -141,6 +158,10 @@ test "logical not" (
     assert -not (-not $t)
 )
 
+test "logical operators with array lhs" (
+    assert ([$t $t $f $f $t] -or $t) -eq $t
+)
+
 test "arithmetic operators" (
     assert (2 + 3) -eq 5
     assert (5 - 2) -eq 3
@@ -151,6 +172,13 @@ test "arithmetic operators" (
 test "arithmetic operator precedence with parens" (
     assert ((2 + 3) * 4) -eq 20
     assert (2 + (3 * 4)) -eq 14
+)
+
+test "arithmetic operators with array lhs" (
+    assert ([1 2 3 4] + 2) -eq [3 4 5 6]
+    assert ([1 2 3 4] + 2) -ne [1 2 9 4]
+    assert ([1 2 3 4] * 2) -eq [2 4 6 8]
+    assert ([2 4 6 8] / 2) -eq [1 2 3 4]
 )
 
 test "where filters an array keeping matches" (
