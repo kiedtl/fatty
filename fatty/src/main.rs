@@ -650,7 +650,10 @@ impl App {
                 }
             },
             Message::Signal(sig) => {
-                if let Some(current) = self.execs.last() && let Some(waiting_on) = &current.waiting_on {
+                if let Some(current) = self.execs.last()
+                    && !current.done
+                    && let Some(waiting_on) = &current.waiting_on
+                {
                     match waiting_on {
                         vm::WaitingOn2::Pid(pid) => kill_process(*pid, sig).unwrap(),
                         vm::WaitingOn2::Builtin(abort_h) => abort_h.abort(),
