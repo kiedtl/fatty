@@ -272,6 +272,8 @@ impl VM {
                     Some(WaitingOn::Builtin(jh, maybe_reader)) => {
                         reader = maybe_reader;
                         jh.await;
+                        reason = ExitReason::Builtin;
+                        self.child_exit_stack.push(reason);
                     },
                     Some(WaitingOn::Pid(pid, maybe_reader)) => {
                         reader = maybe_reader;
@@ -362,6 +364,7 @@ impl VM {
                 if let Some(sender) = &self.msg_tx {
                     sender.send(VMMessage::ChangedDir).await.unwrap();
                 }
+                self.child_exit_stack.push(ExitReason::Builtin)
             }
             Instr::Run { muffle, command } => {
                 let Some(args) = (0..command.argc)
