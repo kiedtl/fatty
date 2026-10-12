@@ -46,6 +46,11 @@ pub enum Instr {
 
     ChangeDir,
 
+    /// Stack manipulation
+    Swap,
+    Tuck,
+    Drop,
+
     /// Execute command in current context
     Run {
         command: Command2,
@@ -97,9 +102,6 @@ pub enum Instr {
 
     /// Negate the TOS
     Negate,
-
-    /// Pop the TOS
-    Pop,
 
     /// Pop from rstack, returning if possible or otherwise marking the VM as "done"
     Return,
@@ -851,34 +853,66 @@ impl VM {
                     })
                 }
 
-                let b = pop_value!(self);
-                let a = pop_value!(self);
+                let lhs = pop_value!(self);
+                let rhs = pop_value!(self);
 
                 let op = *op;
                 let result = match op {
-                    Operator::Eq => Value::Bool(match (a, b) {
+                    Operator::Eq => Value::Bool(match (lhs, rhs) {
                         (Value::Array(arr), rhs) if rhs.is_scalar() => arr.as_ref().iter().all(|v| v == &rhs),
-                        (a, b) => a == b,
+                        (lhs, rhs) => lhs == rhs,
                     }),
-                    Operator::Ne => Value::Bool(match (a, b) {
+                    Operator::Ne => Value::Bool(match (lhs, rhs) {
                         (Value::Array(arr), rhs) if rhs.is_scalar() => arr.as_ref().iter().all(|v| v != &rhs),
-                        (a, b) => a != b,
+                        (lhs, rhs) => lhs != rhs,
                     }),
                     Operator::Gt | Operator::Lt | Operator::Le | Operator::Ge
-                        => Value::Bool(match perform_cmp(&a, &b, op, true) {
-                            Ok(b) => b,
-                            Err((a, b)) => vmerror!("invalid operands: {a:?} and {b:?}"),
+                        => Value::Bool(match perform_cmp(&lhs, &rhs, op, true) {
+                            Ok(rhs) => rhs,
+                            Err((lhs, rhs)) => vmerror!("invalid operands: {lhs:?} and {rhs:?}"),
                         }),
                     Operator::And | Operator::Or | Operator::Xor
-                        => match perform_boolop(&a, &b, op, true) {
-                            Ok(b) => b,
-                            Err((a, b)) => vmerror!("invalid operands: {a:?} and {b:?}"),
+                        => match perform_boolop(&lhs, &rhs, op, true) {
+                            Ok(rhs) => rhs,
+                            Err((lhs, rhs)) => vmerror!("invalid operands: {lhs:?} and {rhs:?}"),
                         },
                     Operator::Add | Operator::Sub | Operator::Mul | Operator::Div
-                        => match perform_math(&a, &b, op, true) {
-                            Ok(b) => b,
-                            Err((a, b)) => vmerror!("invalid operands: {a:?} and {b:?}"),
+                        => match perform_math(&lhs, &rhs, op, true) {
+                            Ok(rhs) => rhs,
+                            Err((lhs, rhs)) => vmerror!("invalid operands: {lhs:?} and {rhs:?}"),
                         },
+                    Operator::Concat => match (lhs, rhs) {
+                        (Value::Array(mut lhs), rhs) => {
+                            lhs.to_mut().push(rhs);
+                            Value::Array(lhs)
+                        },
+                        (Value::Text(mut lhs), Value::Text(rhs)) => {
+                            lhs.to_mut().push_str(rhs.as_ref());
+                            Value::Text(lhs)
+                        },
+                        (Value::Bytes(_), _) => vmerror!("TODO: bytes concat"),
+                        (a, b) => vmerror!("invalid concat operands: {a:?} and {b:?}"),
+                    },
+                    Operator::Extend => match (lhs, rhs) {
+                        (Value::Array(mut lhs), Value::Array(rhs)) => {
+                            let rhs: Vec<_> = rhs.into_owned();
+                            lhs.to_mut().extend(rhs);
+                            Value::Array(lhs)
+                        },
+                        (Value::Bytes(_), Value::Bytes(_)) => vmerror!("TODO: bytes extend"),
+                        (Value::Table { mut header, rows }, Value::Table { header: rhs_head, rows: rhs }) => {
+                            for rhs_head in rhs_head {
+                                if !header.contains(&rhs_head) {
+                                    header.push(rhs_head);
+                                }
+                            }
+                            _ = rows;
+                            _ = rhs;
+                            todo!()
+                            //Value::Table { header, rows }
+                        },
+                        (a, b) => vmerror!("invalid concat operands: {a:?} and {b:?}"),
+                    },
                     Operator::Like => todo!(),
                     Operator::NotLike => todo!(),
                 };
@@ -889,8 +923,22 @@ impl VM {
                 let res = !pop_value!(self).truthy();
                 self.push_value(Value::Bool(res));
             }
-            Instr::Pop => {
-                _ = self.stack.pop();
+            Instr::Tuck => {
+                // a b => b a b
+                let b = self.stack.pop().unwrap();
+                let a = self.stack.pop().unwrap();
+                self.stack.push(b.clone());
+                self.stack.push(a);
+                self.stack.push(b);
+            },
+            Instr::Swap => {
+                let b = self.stack.pop().unwrap();
+                let a = self.stack.pop().unwrap();
+                self.stack.push(b);
+                self.stack.push(a);
+            },
+            Instr::Drop => {
+                _ = self.stack.pop().unwrap();
             }
             Instr::Return => {
                 self.ret().await;
@@ -1059,7 +1107,9 @@ pub fn print_program(p: &[Block]) {
                 Instr::CollectTable(n) => println!("  - collect_table {n}"),
                 Instr::Op(op) => println!("  - op {op:?}"),
                 Instr::Negate => println!("  - negate"),
-                Instr::Pop => println!("  - pop"),
+                Instr::Tuck => println!("  - tuck"),
+                Instr::Swap => println!("  - swap"),
+                Instr::Drop => println!("  - drop"),
                 Instr::Return => println!("  - return"),
                 Instr::Explode(lc, s) => println!("  - explode {lc:?} '{s}'"),
             }

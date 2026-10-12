@@ -146,6 +146,25 @@ impl Compiler {
         Ok(())
     }
 
+    fn compile_var(&mut self, flags: Flags, path: &[PathBuf], var: &Var, out: &mut Vec<Instr>)
+        -> Result<(), CompileError>
+    {
+        out.push(Instr::VarRef(var.name.clone()));
+        for field in &var.fields {
+            match field {
+                FieldExpr::Column(operand) => {
+                    self.compile_single(flags, path, &operand, out)?;
+                    out.push(Instr::GetColumn);
+                }
+                FieldExpr::Index(operand) => {
+                    self.compile_single(flags, path, &operand, out)?;
+                    out.push(Instr::GetIndex);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn compile_ast(
         &mut self,
         flags: Flags,
@@ -165,20 +184,14 @@ impl Compiler {
                 out.push(Instr::Call { block: self.blocks.len() - 1 });
                 out.push(Instr::Assert(*lc));
             }
-            Ast::Stmt(_lc, Stmt::Assignment(Assignment { lhs, rhs })) => {
+            Ast::Stmt(_lc, Stmt::Assignment(Assignment { lhs, rhs, op })) => {
                 self.compile_single(flags.muffle(), path, rhs, out)?;
-                out.push(Instr::VarRef(lhs.name.clone()));
-                for field in &lhs.fields {
-                    match field {
-                        FieldExpr::Column(operand) => {
-                            self.compile_single(flags, path, &operand, out)?;
-                            out.push(Instr::GetColumn);
-                        }
-                        FieldExpr::Index(operand) => {
-                            self.compile_single(flags, path, &operand, out)?;
-                            out.push(Instr::GetIndex);
-                        }
-                    }
+                self.compile_var(flags, path, lhs, out)?;
+                if let Some(op) = op {
+                    out.push(Instr::Tuck);
+                    out.push(Instr::Deref);
+                    out.push(Instr::Op(*op));
+                    out.push(Instr::Swap);
                 }
                 out.push(Instr::SetVar);
             }
@@ -199,9 +212,9 @@ impl Compiler {
                 self.blocks.push(b);
                 out.push(Instr::Call { block: self.blocks.len() - 1 });
             }
-            Ast::Stmt(_lc, Stmt::BoolExpr(BoolExpr { lhs, rhs, op })) => {
-                self.compile_single(flags, path, lhs, out)?;
+            Ast::Stmt(_lc, Stmt::OpExpr(OpExpr { lhs, rhs, op })) => {
                 self.compile_single(flags, path, rhs, out)?;
+                self.compile_single(flags, path, lhs, out)?;
                 out.push(Instr::Op(*op));
             }
             Ast::Stmt(_lc, Stmt::BoolNegate(inner)) => {

@@ -26,6 +26,7 @@ pub enum Operator {
     Eq, Ne, Lt, Gt, Le, Ge,
     Like, NotLike,
     Add, Sub, Mul, Div,
+    Concat, Extend,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +36,7 @@ pub enum Single {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BoolExpr {
+pub struct OpExpr {
     pub lhs: Single,
     pub rhs: Single,
     pub op: Operator,
@@ -125,6 +126,7 @@ pub enum PipelineItem {
 pub struct Assignment {
     pub lhs: Var,
     pub rhs: Single,
+    pub op: Option<Operator>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -151,7 +153,7 @@ pub enum Stmt {
     Background(Box<Ast>),
     Command(Command),
     Where(Box<Ast>),
-    BoolExpr(BoolExpr),
+    OpExpr(OpExpr),
     BoolNegate(Single),
     // Query(Query),
 }
@@ -220,6 +222,13 @@ fn unescape_dq(s: &str) -> Result<String, String> {
         }
     }
     Ok(out)
+}
+
+fn is_reserved_variable(s: &str) -> bool {
+    match s {
+        "t" | "f" | "nil" | "undef" => true,
+        _ => false,
+    }
 }
 
 fn is_glob(s: &str) -> bool {
@@ -362,6 +371,8 @@ fn str_to_op(s: &str) -> Operator {
         "-lt" => Operator::Lt,
         "-lk" => Operator::Like,
         "-nk" => Operator::NotLike,
+        "<-" => Operator::Concat,
+        "<|" => Operator::Extend,
         _ => unreachable!(),
     }
 }
@@ -383,7 +394,7 @@ fn parse_bool_expr<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<As
                     let lhs = parse_single(inner.next().unwrap())?;
                     let op = str_to_op(inner.next().unwrap().as_str());
                     let rhs = parse_single(inner.next().unwrap())?;
-                    Ok(Single::Sub(Box::new(Ast::Stmt(lc, Stmt::BoolExpr(BoolExpr { op, lhs, rhs })))))
+                    Ok(Single::Sub(Box::new(Ast::Stmt(lc, Stmt::OpExpr(OpExpr { op, lhs, rhs })))))
                 }
                 Rule::double_quoted | Rule::single_quoted | Rule::unquoted
                     => Ok(Single::Token(parse_token(primary)?)),
@@ -401,7 +412,7 @@ fn parse_bool_expr<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<As
                 Rule::b_or_op  => Operator::Or,
                 r => unreachable!("unexpected infix {r:?}"),
             };
-            Ok(Single::Sub(Box::new(Ast::Stmt(span_lc(&rule), Stmt::BoolExpr(BoolExpr { op, lhs, rhs })))))
+            Ok(Single::Sub(Box::new(Ast::Stmt(span_lc(&rule), Stmt::OpExpr(OpExpr { op, lhs, rhs })))))
         })
         .parse(pairs)
         .map(|ok| match ok {
@@ -450,15 +461,34 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
         Rule::command => {
             Ast::Stmt(lc, Stmt::Command(parse_command(lc, pair.into_inner())?))
         },
+        Rule::assignext => {
+            let mut inner = pair.into_inner();
+            let Token::Var(lhs) = parse_token(inner.next().unwrap())? else { unreachable!() };
+            if is_reserved_variable(&lhs.name) {
+                return Err(format!("Reserved variable {} cannot be assigned to.", lhs.name));
+            }
+            let rhs = parse_single(inner.next().unwrap())?;
+            let op = Some(Operator::Extend);
+            Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs, op }))
+        },
+        Rule::assigncat => {
+            let mut inner = pair.into_inner();
+            let Token::Var(lhs) = parse_token(inner.next().unwrap())? else { unreachable!() };
+            if is_reserved_variable(&lhs.name) {
+                return Err(format!("Reserved variable {} cannot be assigned to.", lhs.name));
+            }
+            let rhs = parse_single(inner.next().unwrap())?;
+            let op = Some(Operator::Concat);
+            Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs, op }))
+        },
         Rule::assignment => {
             let mut inner = pair.into_inner();
             let Token::Var(lhs) = parse_token(inner.next().unwrap())? else { unreachable!() };
-            match lhs.name.as_str() {
-                "t" | "f" | "nil" | "undef" => return Err(format!("Reserved variable {} cannot be assigned to.", lhs.name)),
-                _ => (),
+            if is_reserved_variable(&lhs.name) {
+                return Err(format!("Reserved variable {} cannot be assigned to.", lhs.name));
             }
             let rhs = parse_single(inner.next().unwrap())?;
-            Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs }))
+            Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs, op: None }))
         },
         Rule::b_expr => parse_bool_expr(pair.into_inner())?,
 

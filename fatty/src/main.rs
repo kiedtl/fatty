@@ -942,8 +942,10 @@ impl App {
                         },
                         Column::with_children(
                             exec.stack.iter().map(|item| {
-                                let vm::StackValue::Value(v) = item else { unreachable!() };
-                                bwine_ui::to_iced(v, self.vsize.get())
+                                match item {
+                                    vm::StackValue::Value(v) => bwine_ui::to_iced(v, self.vsize.get()),
+                                    vm::StackValue::VarRef(vr) => text(format!("ref: {:?}", vr)).boxed(),
+                                }
                             })
                         ),
                         // text({
