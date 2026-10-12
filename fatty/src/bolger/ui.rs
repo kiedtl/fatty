@@ -150,6 +150,7 @@ impl Element {
         use iced::widget::{container, row, Row, text, space, responsive, table::{self, Table}, Widget};
         use crate::Elem;
 
+        println!("{:?}", self);
         match self {
             Element::Header(l, e) => e.to_iced(Style { size: TextSize::H(*l), ..style }, ids),
             Element::Table { columns, rows } => {
@@ -192,6 +193,8 @@ impl Element {
                             space().height(18.).width((1. - p) * size.width),
                         ]
                     }))
+                        .height(Length::Shrink)
+                        .width(Length::Shrink)
                         .padding(Padding {
                             left: 0.,
                             right: 4., bottom: 4., top: 4.,
