@@ -69,7 +69,7 @@ pub enum Token {
     Int(i128),
     Float(f64),
     String(String),
-    Word(String),
+    Glob(String),
     Var(Var),
     Array(Array),
     Table(Table),
@@ -83,7 +83,7 @@ impl Token {
             Token::Int(i) => i.to_string(),
             Token::Float(i) => i.to_string(),
             Token::String(s) => s.clone(),
-            Token::Word(s) => s.clone(),
+            Token::Glob(s) => s.clone(),
             Token::Var(s) => format!("{:?}", s),
         }
     }
@@ -222,6 +222,21 @@ fn unescape_dq(s: &str) -> Result<String, String> {
     Ok(out)
 }
 
+fn is_glob(s: &str) -> bool {
+    let mut escaped = false;
+    for c in s.chars() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if matches!(c, '*' | '?' | '[') {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn unescape_unquoted(s: &str) -> Result<String, String> {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
@@ -300,7 +315,14 @@ fn parse_token<'a>(pair: Pair<'a, Rule>) -> Result<Token, String> {
         Rule::double_quoted => Token::String(unescape_dq(pair.as_str()[1..].strip_suffix('"').unwrap())?),
         Rule::integer => Token::Int(pair.as_str().parse::<i128>().unwrap()),
         Rule::float_lit => Token::Float(pair.as_str().parse::<f64>().unwrap()),
-        Rule::unquoted => Token::Word(unescape_unquoted(pair.as_str())?),
+        Rule::unquoted => {
+            let s = unescape_unquoted(pair.as_str())?;
+            if is_glob(&s) {
+                Token::Glob(s)
+            } else {
+                Token::String(s)
+            }
+        },
         s => panic!("todo: {:?}", s),
     })
 }
@@ -443,7 +465,7 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
         Rule::test_decl => {
             let mut inner = pair.into_inner();
             let name = match parse_token(inner.next().unwrap())? {
-                Token::Word(w) => w,
+                Token::Glob(w) => w,
                 Token::String(s) => s,
                 _ => unreachable!(), // Only un/single/double-quoted strings allowed by grammer
             };
@@ -502,4 +524,23 @@ pub fn parse_str(input: &str) -> Result<Vec<Ast>, String> {
 
     assert_eq!(None, pairs.next());
     ast
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_glob() {
+        assert!(is_glob("*.rs"));
+        assert!(is_glob("blah?.txt"));
+        assert!(is_glob("item_[0-9].png"));
+        assert!(is_glob(r"dir\\*"));
+
+        assert!(!is_glob("foo.txt"));
+        assert!(!is_glob(r"\*.rs"));
+        assert!(!is_glob(r"bar\?.txt"));
+        assert!(!is_glob(r"item_\[0-9].png"));
+        assert!(!is_glob(r"dir\\\*"));
+    }
 }

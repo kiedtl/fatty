@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{Read, PipeReader};
+use std::io::{Read, Write, PipeReader};
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,6 +72,9 @@ pub enum Instr {
 
     /// Push a non-Table/Array/Var Token to the stack.
     Load(Token),
+
+    /// Same thing as Load(tok), but also collects into an array.
+    LoadGlob(String),
 
     /// Instructions to load a variable. VarRef starts out by pushing a VarRef with an empty set of
     /// fields; GetColumn/Index adds fields, and Deref/SetVar finalizes it by either retrieving the
@@ -317,6 +320,21 @@ impl VM {
     }
 
     pub async fn execute_once(&mut self) {
+        macro_rules! vmerror {
+            ($($arg:tt)*) => {
+                { // New scope to force args to drop before self.end()
+                    let args = format_args!($($arg)*);
+                    if let Some(slave) = self.slave.as_ref() {
+                        let mut w = FdRw(slave.clone());
+                        let _ = writeln!(w, "{args}");
+                    } else {
+                        eprintln!("{args}");
+                    }
+                }
+                self.end().await;
+                return;
+            };
+        }
         assert!(!self.done);
         assert!(self.waiting_on.is_none());
 
@@ -340,7 +358,7 @@ impl VM {
                 self.test_ctx.successful += 1;
             },
             Instr::Explode(lc, message) => {
-                println!("{lc:?}: {message}");
+                vmerror!("{lc:?}: {message}");
             },
             Instr::Assert(lc) => {
                 let value = pop_value!(self);
@@ -367,13 +385,23 @@ impl VM {
                 self.child_exit_stack.push(ExitReason::Builtin)
             }
             Instr::Run { muffle, command } => {
-                let Some(args) = (0..command.argc)
-                    .map(|_| pop_value!(self))
-                    .map(|v| v.os_string())
-                    .collect::<Option<Vec<OsString>>>()
-                    else {
-                        panic!("One of the arguments cannot be turned into a string");
-                    };
+                let mut args = Vec::new();
+                for _ in 0..command.argc {
+                    match pop_value!(self) {
+                        Value::Array(arr) => for v in arr.as_ref().iter() {
+                            if let Some(s) = v.os_string() {
+                                args.push(s);
+                            } else {
+                                vmerror!("Can only spread to a depth of 1");
+                            }
+                        },
+                        v => if let Some(s) = v.os_string() {
+                            args.push(s);
+                        } else {
+                            vmerror!("One of the arguments cannot be turned into a string, and is not a spreadable array");
+                        },
+                    }
+                }
 
                 let mut muffle_reader = None;
                 let mut keep: Option<OwnedFd> = None;
@@ -712,7 +740,7 @@ impl VM {
             }
             Instr::Load(tok) => {
                 match tok {
-                    Token::Word(s) => for item in expand_token(&s) {
+                    Token::Glob(s) => for item in expand_token(&s) {
                         self.push_value(Value::from(item));
                     },
                     Token::String(v) => self.push_value(Value::from(v.clone())),
@@ -722,6 +750,13 @@ impl VM {
                     Token::Array(_) => unreachable!(),
                     Token::Table(_) => unreachable!(),
                 }
+            },
+            Instr::LoadGlob(s) => {
+                let mut accm = Vec::new();
+                for item in expand_token(&s) {
+                    accm.push(Value::from(item));
+                }
+                self.push_value(Value::Array(accm.into()));
             },
             Instr::Op(op) => {
                 fn cmp<T: PartialOrd>(a: T, b: T, op: Operator) -> bool {
@@ -809,25 +844,29 @@ impl VM {
             self.pc = newpc;
             self.scope.pop().unwrap();
         } else {
-            self.done = true;
-            assert!(self.scope.len() >= 1);
-            if let Some(sender) = &self.msg_tx {
-                sender.send(VMMessage::Done {
-                    stack: std::mem::take(&mut self.stack),
-                    last_exit_reason: self.child_exit_stack.pop(),
-                    vars: self.scope.last().unwrap().vars.clone(),
-                }).await.unwrap();
-            }
-            if let Some(sender) = &self.status {
-                sender.send_modify(move |previous| {
-                    match std::mem::take(previous) {
-                        VMStatus::Done { command, reason } => *previous = VMStatus::Resolved { command, reason: Some(reason) },
-                        VMStatus::None => *previous = VMStatus::Resolved { command: None, reason: None },
-                        VMStatus::Resolved { command, reason } => panic!("Job already resolved: {command:?} {reason:?}"),
-                        VMStatus::Waiting { item, on } => panic!("Job waiting: {item:?} {on:?}"),
-                    }
-                });
-            }
+            self.end().await;
+        }
+    }
+
+    async fn end(&mut self) {
+        self.done = true;
+        assert!(self.scope.len() >= 1);
+        if let Some(sender) = &self.msg_tx {
+            sender.send(VMMessage::Done {
+                stack: std::mem::take(&mut self.stack),
+                last_exit_reason: self.child_exit_stack.pop(),
+                vars: self.scope.last().unwrap().vars.clone(),
+            }).await.unwrap();
+        }
+        if let Some(sender) = &self.status {
+            sender.send_modify(move |previous| {
+                match std::mem::take(previous) {
+                    VMStatus::Done { command, reason } => *previous = VMStatus::Resolved { command, reason: Some(reason) },
+                    VMStatus::None => *previous = VMStatus::Resolved { command: None, reason: None },
+                    VMStatus::Resolved { command, reason } => panic!("Job already resolved: {command:?} {reason:?}"),
+                    VMStatus::Waiting { item, on } => panic!("Job waiting: {item:?} {on:?}"),
+                }
+            });
         }
     }
 
@@ -952,6 +991,7 @@ pub fn print_program(p: &[Block]) {
                 Instr::SetVar => println!("  - set_var"),
                 Instr::Call { block } => println!("  - call {block}"),
                 Instr::Load(tok) => println!("  - push {}", tok.to_string()),
+                Instr::LoadGlob(tok) => println!("  - push_glob {}", tok.to_string()),
                 Instr::VarRef(s) => println!("  - load {s}"),
                 Instr::GetColumn => println!("  - index_column"),
                 Instr::GetIndex => println!("  - index_row"),

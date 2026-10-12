@@ -120,6 +120,7 @@ impl Compiler {
                 }
                 out.push(Instr::CollectTable(rows.len()));
             }
+            Token::Glob(s) => out.push(Instr::LoadGlob(s.clone())),
             _ => out.push(Instr::Load(tok.clone())),
         }
         Ok(())
