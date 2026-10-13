@@ -185,6 +185,17 @@ impl Compiler {
                 out.push(Instr::Assert(*lc));
             }
             Ast::Stmt(_lc, Stmt::Assignment(Assignment { lhs, rhs, op })) => {
+                // Sample stack operations:
+                //     "a"            -> "a"
+                //     $var           -> "a" $var
+                //     getcolumn foo  -> "a" $var.foo
+                //     getrow 3       -> "a" $var.foo[3]
+                //     tuck           -> $var.foo[3] "a" $var.foo[3]
+                //     deref          -> $var.foo[3] "a" ["b", "c", "d"]
+                //     concat         -> $var.foo[3] ["b", "c", "d", "a"]
+                //     swap           -> ["b", "c", "d", "a"] $var.foo[3] 
+                //     setvar         -> <empty>
+                //
                 self.compile_single(flags.muffle(), path, rhs, out)?;
                 self.compile_var(flags, path, lhs, out)?;
                 if let Some(op) = op {

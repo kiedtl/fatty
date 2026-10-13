@@ -170,6 +170,13 @@ static PRATT: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
         .op(PrattOp::infix(Rule::b_xor_op, Assoc::Left))
         .op(PrattOp::infix(Rule::b_and_op, Assoc::Left))
         .op(PrattOp::prefix(Rule::b_not_op)) // -not is tightest binding
+        // Comparison operators
+        .op(PrattOp::infix(Rule::cmp_op, Assoc::Left))
+        // Concat / Extend operators
+        .op(PrattOp::infix(Rule::concat_op, Assoc::Left))
+        // Arithmetic operators (MDAS)
+        .op(PrattOp::infix(Rule::add_op, Assoc::Left))
+        .op(PrattOp::infix(Rule::mul_op, Assoc::Left))
 });
 
 fn escape(chars: &mut impl Iterator<Item = char>, out: &mut String) -> Option<()> {
@@ -357,6 +364,18 @@ fn span_lc(pair: &Pair<Rule>) -> LineCol {
     LineCol(l, s.start(), s.end())
 }
 
+fn str_to_assignment_op(s: &str) -> Result<Option<Operator>, String> {
+    Ok(match s {
+        "+=" => Some(Operator::Add),
+        "-=" => Some(Operator::Sub),
+        "/=" => Some(Operator::Div),
+        "*=" => Some(Operator::Mul),
+        "<<-" => Some(Operator::Concat),
+        "<<|" => Some(Operator::Extend),
+        "=" => None,
+        _ => unreachable!(), // Grammar shouldn't allow this
+    })
+}
 fn str_to_op(s: &str) -> Operator {
     match s {
         "+" => Operator::Add,
@@ -373,7 +392,7 @@ fn str_to_op(s: &str) -> Operator {
         "-nk" => Operator::NotLike,
         "<-" => Operator::Concat,
         "<|" => Operator::Extend,
-        _ => unreachable!(),
+        _ => unreachable!(), // Grammar shouldn't allow this
     }
 }
 
@@ -387,19 +406,7 @@ fn parse_single<'a>(pair: Pair<'a, Rule>) -> Result<Single, String> {
 
 fn parse_bool_expr<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Ast, String> {
     PRATT.map_primary(|primary| -> Result<Single, String> {
-            match primary.as_rule() {
-                Rule::small_op => {
-                    let lc = span_lc(&primary);
-                    let mut inner = primary.into_inner();
-                    let lhs = parse_single(inner.next().unwrap())?;
-                    let op = str_to_op(inner.next().unwrap().as_str());
-                    let rhs = parse_single(inner.next().unwrap())?;
-                    Ok(Single::Sub(Box::new(Ast::Stmt(lc, Stmt::OpExpr(OpExpr { op, lhs, rhs })))))
-                }
-                Rule::double_quoted | Rule::single_quoted | Rule::unquoted
-                    => Ok(Single::Token(parse_token(primary)?)),
-                _ => Ok(Single::Sub(Box::new(parse_ast(primary)?))),
-            }
+            parse_single(primary)
         })
         .map_prefix(|op, rhs| {
             Ok(Single::Sub(Box::new(Ast::Stmt(span_lc(&op), Stmt::BoolNegate(rhs?)))))
@@ -410,14 +417,14 @@ fn parse_bool_expr<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<As
                 Rule::b_and_op => Operator::And,
                 Rule::b_xor_op => Operator::Xor,
                 Rule::b_or_op  => Operator::Or,
-                r => unreachable!("unexpected infix {r:?}"),
+                _ => str_to_op(rule.as_str()),
             };
             Ok(Single::Sub(Box::new(Ast::Stmt(span_lc(&rule), Stmt::OpExpr(OpExpr { op, lhs, rhs })))))
         })
         .parse(pairs)
         .map(|ok| match ok {
             Single::Sub(s) => *s,
-            _ => unreachable!()
+            Single::Token(t) => Ast::Stmt(LineCol(0, 0, 0), Stmt::Token(t)),
         })
 }
 
@@ -461,34 +468,15 @@ fn parse_ast<'a>(pair: Pair<'a, Rule>) -> Result<Ast, String> {
         Rule::command => {
             Ast::Stmt(lc, Stmt::Command(parse_command(lc, pair.into_inner())?))
         },
-        Rule::assignext => {
-            let mut inner = pair.into_inner();
-            let Token::Var(lhs) = parse_token(inner.next().unwrap())? else { unreachable!() };
-            if is_reserved_variable(&lhs.name) {
-                return Err(format!("Reserved variable {} cannot be assigned to.", lhs.name));
-            }
-            let rhs = parse_single(inner.next().unwrap())?;
-            let op = Some(Operator::Extend);
-            Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs, op }))
-        },
-        Rule::assigncat => {
-            let mut inner = pair.into_inner();
-            let Token::Var(lhs) = parse_token(inner.next().unwrap())? else { unreachable!() };
-            if is_reserved_variable(&lhs.name) {
-                return Err(format!("Reserved variable {} cannot be assigned to.", lhs.name));
-            }
-            let rhs = parse_single(inner.next().unwrap())?;
-            let op = Some(Operator::Concat);
-            Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs, op }))
-        },
         Rule::assignment => {
             let mut inner = pair.into_inner();
             let Token::Var(lhs) = parse_token(inner.next().unwrap())? else { unreachable!() };
             if is_reserved_variable(&lhs.name) {
                 return Err(format!("Reserved variable {} cannot be assigned to.", lhs.name));
             }
+            let op = str_to_assignment_op(inner.next().unwrap().as_str())?;
             let rhs = parse_single(inner.next().unwrap())?;
-            Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs, op: None }))
+            Ast::Stmt(lc, Stmt::Assignment(Assignment { lhs, rhs, op }))
         },
         Rule::b_expr => parse_bool_expr(pair.into_inner())?,
 

@@ -4,15 +4,14 @@ NL            = _{ "\n"* }
 
 program       =  { SOI ~ NL ~ (decl | stmt) ~ (("\n"* ~ decl | "\n"+ ~ stmt))* ~ NL ~ EOI }
 stmts         = _{ stmt ~ ("\n"+ ~ stmt)* }
-stmt          =  { (assignment | assigncat | assignext | background | chain | pipeline | b_expr | sub | special | literal | command | token) }
+stmt          =  { (assignment | background | chain | pipeline | b_expr | sub | special | literal | command | token) }
 background    =  { (chain | pipeline | sub | command) ~ "&" }
 chain         =  { (pipeline | b_expr | sub | special | command) ~ (connector ~ (pipeline | b_expr | sub | special | command))+ }
 pipeline      =  { (literal | sub | special | command | token) ~ ("|" ~ (sub | special | command))+ }
 sub           =  { "(" ~ NL ~ stmts ~ NL ~ ")" }
 command       =  { unquoted ~ single* }
-assignment    =  { var ~ "=" ~ (stmt | token) }
-assigncat     =  { var ~ "<<-" ~ (stmt | token) }
-assignext     =  { var ~ "<<|" ~ (stmt | token) }
+assignment_op =  { "<<-" | "<<|" | "+=" | "-=" | "*=" | "/=" | "=" }
+assignment    =  { var ~ assignment_op ~ (stmt | token) }
 
 connector     =  { "&&" | "||" }
 
@@ -25,21 +24,22 @@ test_decl     =  { "test" ~ (unquoted | single_quoted | double_quoted) ~ sub }
 
 b_expr        = {
       prefix+ ~ atom ~ (infix ~ prefix* ~ atom)*
-    | small_op ~ (infix ~ prefix* ~ atom)*
     | atom ~ (infix ~ prefix* ~ atom)+
 }
-atom          = _{ small_op | sub | token }
-small_op      =  { single ~ ops ~ single }
+atom          = _{ sub | token }
 single        = _{ sub | token }
 
-infix         = _{ b_and_op | b_xor_op | b_or_op }
+infix         = _{ b_and_op | b_xor_op | b_or_op | cmp_op | concat_op | add_op | mul_op }
 prefix        = _{ b_not_op }
 
 b_and_op      =  { "-and" ~ !(ASCII_ALPHANUMERIC | "_") }
 b_xor_op      =  { "-xor" ~ !(ASCII_ALPHANUMERIC | "_") }
 b_or_op       =  { "-or"  ~ !(ASCII_ALPHANUMERIC | "_") }
 b_not_op      =  { "-not" ~ !(ASCII_ALPHANUMERIC | "_") }
-ops           = @{ ("-eq"|"-ne"|"-ge"|"-gt"|"-le"|"-lt"|"-lk"|"-nk"|"<-"|"<|"|"-"|"+"|"*"|"/") ~ !(ASCII_ALPHANUMERIC | "_") }
+cmp_op        = @{ ("-eq"|"-ne"|"-ge"|"-gt"|"-le"|"-lt"|"-lk"|"-nk") ~ !(ASCII_ALPHANUMERIC | "_") }
+concat_op     = @{ ("<-"|"<|") ~ !(ASCII_ALPHANUMERIC | "_") }
+add_op        = @{ ("+"|"-") ~ !(ASCII_ALPHANUMERIC | "_") }
+mul_op        = @{ ("*"|"/") ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // token: a value, may contain a value or a computable expression
 token         = _{ var | table | array | literal | unquoted }

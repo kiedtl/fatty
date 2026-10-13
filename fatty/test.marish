@@ -163,15 +163,19 @@ test "logical operators with array lhs" (
 )
 
 test "arithmetic operators" (
-    assert (2 + 3) -eq 5
-    assert (5 - 2) -eq 3
-    assert (4 * 3) -eq 12
-    assert (10 / 2) -eq 5
+    assert 2 + 3 -eq 5
+    assert 5 - 2 -eq 3
+    assert 4 * 3 -eq 12
+    assert 10 / 2 -eq 5
 )
 
-test "arithmetic operator precedence with parens" (
+test "arithmetic operators precedence with parens" (
     assert ((2 + 3) * 4) -eq 20
     assert (2 + (3 * 4)) -eq 14
+)
+
+test "arithmetic operators precedence without parens" (
+    assert 2 + 3 * 4 -eq 14
 )
 
 test "arithmetic operators with array lhs" (
@@ -181,13 +185,29 @@ test "arithmetic operators with array lhs" (
     assert ([2 4 6 8] / 2) -eq [1 2 3 4]
 )
 
+test "arithmetic operators with assignment" (
+    $a = 0
+    $a += 1
+    assert $a -eq 1
+    $a *= 4
+    assert $a -eq 4
+    $a /= 2
+    assert $a -eq 2
+    $a -= 1
+    assert $a -eq 1
+    $a = [1 5 9 2]
+    $a *= 2
+    assert $a -eq [2 10 18 4]
+)
+
 test "concat operator with array and string" (
-    assert ([1 2 3] <- 4) -eq [1 2 3 4]
-    assert ([1 2 3] <- [4]) -eq [1 2 3 [4]]
-    assert ([] <- 0) -eq [0]
+    assert [1 2 3] <- 4 -eq [1 2 3 4]
+    assert [1 2 3] <- [4] -eq [1 2 3 [4]]
+    assert [] <- 0 -eq [0]
     $a = [1 2 3]
-    assert ($a <- 4) -eq [1 2 3 4]
-    assert ("hey" <- "world") -eq "heyworld"
+    assert $a <- 4 -eq [1 2 3 4]
+    assert "hey" <- "world" -eq "heyworld"
+    assert "hey" <- " " <- "world" -eq "hey world"
 )
 
 test "assign concat operator with array and string" (
@@ -199,11 +219,11 @@ test "assign concat operator with array and string" (
 )
 
 test "extend operator with array" (
-    assert ([1 2 3] <| [4]) -eq [1 2 3 4]
-    assert ([] <| []) -eq []
-    assert ([0] <| []) -eq [0]
+    assert [1 2 3] <| [4] -eq [1 2 3 4]
+    assert [] <| [] -eq []
+    assert [0] <| [] -eq [0]
     $a = [1 2 3]
-    assert ($a <| [4 5]) -eq [1 2 3 4 5]
+    assert $a <| [4 5] -eq [1 2 3 4 5]
 )
 
 test "assign extend operator with array" (
@@ -233,5 +253,5 @@ test "where filters a table by column predicate" (
 test "where passes matching table rows through unchanged" (
     $var = [[name size]; ["a" 100]]
     $result = $var | where $_.size[0] -lt 35000
-    assert $result.size[0] -eq $var.size[0]
+    assert $result.size -eq $var.size
 )
